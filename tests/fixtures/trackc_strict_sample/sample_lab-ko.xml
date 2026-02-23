@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<link:linkbase
+  xmlns:link="http://www.xbrl.org/2003/linkbase"
+  xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:labelLink xlink:type="extended">
+    <link:loc
+      xlink:type="locator"
+      xlink:href="sample.xsd#dart_SellingGeneralAdministrativeExpenses"
+      xlink:label="loc_sga" />
+    <link:loc
+      xlink:type="locator"
+      xlink:href="sample.xsd#entity_SemiconductorMember"
+      xlink:label="loc_seg_1" />
+    <link:loc
+      xlink:type="locator"
+      xlink:href="sample.xsd#entity_DXMember"
+      xlink:label="loc_seg_2" />
+    <link:loc
+      xlink:type="locator"
+      xlink:href="sample.xsd#ifrs-full_Revenue"
+      xlink:label="loc_rev" />
+
+    <link:label
+      xlink:type="resource"
+      xlink:label="lab_sga"
+      xlink:role="http://www.xbrl.org/2003/role/label">판매비와관리비</link:label>
+    <link:label
+      xlink:type="resource"
+      xlink:label="lab_seg_1"
+      xlink:role="http://www.xbrl.org/2003/role/label">반도체</link:label>
+    <link:label
+      xlink:type="resource"
+      xlink:label="lab_seg_2"
+      xlink:role="http://www.xbrl.org/2003/role/label">디바이스경험</link:label>
+    <link:label
+      xlink:type="resource"
+      xlink:label="lab_rev"
+      xlink:role="http://www.xbrl.org/2003/role/label">수익</link:label>
+
+    <link:labelArc xlink:type="arc" xlink:from="loc_sga" xlink:to="lab_sga" />
+    <link:labelArc xlink:type="arc" xlink:from="loc_seg_1" xlink:to="lab_seg_1" />
+    <link:labelArc xlink:type="arc" xlink:from="loc_seg_2" xlink:to="lab_seg_2" />
+    <link:labelArc xlink:type="arc" xlink:from="loc_rev" xlink:to="lab_rev" />
+  </link:labelLink>
+</link:linkbase>

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<link:linkbase
+  xmlns:link="http://www.xbrl.org/2003/linkbase"
+  xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:presentationLink
+    xlink:type="extended"
+    xlink:role="http://dart.fss.or.kr/role/D834300">
+    <link:loc
+      xlink:type="locator"
+      xlink:href="sample.xsd#dart_SellingGeneralAdministrativeExpenses"
+      xlink:label="loc_sga" />
+    <link:loc
+      xlink:type="locator"
+      xlink:href="sample.xsd#ifrs-full_Revenue"
+      xlink:label="loc_rev" />
+  </link:presentationLink>
+
+  <link:presentationLink
+    xlink:type="extended"
+    xlink:role="http://dart.fss.or.kr/role/D871100">
+    <link:loc
+      xlink:type="locator"
+      xlink:href="sample.xsd#entity_SemiconductorMember"
+      xlink:label="loc_seg_1" />
+    <link:loc
+      xlink:type="locator"
+      xlink:href="sample.xsd#entity_DXMember"
+      xlink:label="loc_seg_2" />
+    <link:loc
+      xlink:type="locator"
+      xlink:href="sample.xsd#ifrs-full_Revenue"
+      xlink:label="loc_seg_rev" />
+  </link:presentationLink>
+</link:linkbase>

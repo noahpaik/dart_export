@@ -1,0 +1,24 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual env
+.venv/
+venv/
+
+# Local env/config secrets
+.env
+*.local.yaml
+
+# Runtime outputs
+data/*
+!data/.gitkeep
+*.xlsx
+*_summary.json
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

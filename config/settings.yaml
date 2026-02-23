@@ -1,0 +1,21 @@
+dart:
+  api_key: "YOUR_DART_API_KEY"
+  corp_code_db_path: "data/corp_code.db"
+
+paths:
+  raw_dir: "data/raw"
+  parsed_dir: "data/parsed"
+  cache_db_path: "data/cache.db"
+  template_path: "templates/financial_model.xlsx"
+
+llm:
+  provider: "openclaw"
+  gateway_url: "http://localhost:4141"
+  default_model: "openai-codex/gpt-5.2"
+
+pipeline:
+  fs_div: "CFS"  # CFS=연결, OFS=별도
+  years:
+    - "2022"
+    - "2023"
+    - "2024"

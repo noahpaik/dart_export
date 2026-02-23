@@ -1,0 +1,33 @@
+sga_detail:
+  standard_accounts:
+    - 급여
+    - 퇴직급여
+    - 복리후생비
+    - 감가상각비
+    - 무형자산상각비
+    - 지급수수료
+    - 광고선전비
+    - 운반비
+    - 세금과공과
+    - 대손상각비
+    - 기타판관비
+  aliases:
+    급여및상여: 급여
+    임직원급여: 급여
+    종업원급여: 급여
+    퇴직급여충당부채전입액: 퇴직급여
+    수선유지비: 기타판관비
+
+segment_revenue:
+  standard_accounts:
+    - 부문명
+  aliases: {}
+  note: "부문명은 회사별로 동적 생성"
+
+revenue_detail:
+  standard_accounts:
+    - 제품매출
+    - 상품매출
+    - 용역매출
+    - 기타매출
+  aliases: {}
