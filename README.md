@@ -86,6 +86,7 @@ python3 main.py --step8-run-pipeline --company-name 삼성전자 --years 2022,20
 - 구현 현황: `dart_pipeline_implementation_steps.md`
 - 운영 가이드: `docs/OPERATIONS.md`
 - CI 규칙: `docs/CI_RULES.md`
+- 릴리스 노트: `docs/releases/v0.1.0.md`
 
 ## 테스트
 
