@@ -27,6 +27,10 @@ class DocumentClassifier:
 
     SUPPORTED_EXTENSIONS = {".html", ".htm", ".xml"}
 
+    NOTES_SCORE_THRESHOLD = 0.6
+    FS_BODY_SCORE_THRESHOLD = 0.7
+    TABLE_DENSITY_MIN_TABLES = 3
+
     NOTES_KEYWORDS: dict[str, float] = {
         "재무제표에 대한 주석": 1.0,
         "재무제표 주석": 1.0,
@@ -57,6 +61,53 @@ class DocumentClassifier:
         "자본변동표",
     )
 
+    COMPANY_PROFILE_OVERRIDES: dict[str, str] = {
+        "삼성전자": "manufacturing",
+        "SK하이닉스": "manufacturing",
+        "현대자동차": "manufacturing",
+        "LG전자": "manufacturing",
+        "POSCO홀딩스": "manufacturing",
+        "KB금융": "finance",
+        "신한금융지주": "finance",
+        "하나금융지주": "finance",
+        "우리금융지주": "finance",
+        "메리츠금융지주": "finance",
+        "삼성생명": "finance",
+        "삼성화재": "finance",
+    }
+    FINANCE_NAME_MARKERS = ("금융", "은행", "카드", "캐피탈", "보험", "증권", "리츠")
+    MANUFACTURING_NAME_MARKERS = ("전자", "하이닉스", "자동차", "중공업", "철강", "화학")
+
+    NOTES_SCORE_THRESHOLD_BY_PROFILE: dict[str, float] = {
+        "general": NOTES_SCORE_THRESHOLD,
+        "manufacturing": NOTES_SCORE_THRESHOLD,
+        "finance": 0.55,
+    }
+    FS_BODY_SCORE_THRESHOLD_BY_PROFILE: dict[str, float] = {
+        "general": FS_BODY_SCORE_THRESHOLD,
+        "manufacturing": FS_BODY_SCORE_THRESHOLD,
+        "finance": 0.6,
+    }
+    EXTRA_NOTES_KEYWORDS_BY_PROFILE: dict[str, dict[str, float]] = {
+        "general": {},
+        "manufacturing": {
+            "매출실적": 0.2,
+            "수주상황": 0.2,
+        },
+        "finance": {
+            "순이자수익": 0.35,
+            "순수수료수익": 0.35,
+            "보험영업수익": 0.35,
+            "대손충당금": 0.3,
+            "신용손실충당금": 0.3,
+            "자본적정성": 0.2,
+        },
+    }
+
+    def __init__(self, company_name: str | None = None):
+        self.company_name = (company_name or "").strip()
+        self.profile = self._resolve_profile(self.company_name)
+
     def classify_documents(self, html_files: list[Path]) -> list[DartDocument]:
         docs = []
         for path in html_files:
@@ -84,11 +135,15 @@ class DocumentClassifier:
         search_text = f"{title} {text}"
         text_head = search_text[:6000]
         score = 0.0
-        matched = []
-        for keyword, weight in self.NOTES_KEYWORDS.items():
-            if keyword in text_head:
-                score += weight
-                matched.append(keyword)
+        matched: list[str] = []
+        score += self._score_keywords(text_head, self.NOTES_KEYWORDS, matched)
+        score += self._score_keywords(
+            text_head,
+            self.EXTRA_NOTES_KEYWORDS_BY_PROFILE.get(self.profile, {}),
+            matched,
+        )
+        notes_threshold = self.NOTES_SCORE_THRESHOLD_BY_PROFILE.get(self.profile, self.NOTES_SCORE_THRESHOLD)
+        fs_body_threshold = self.FS_BODY_SCORE_THRESHOLD_BY_PROFILE.get(self.profile, self.FS_BODY_SCORE_THRESHOLD)
 
         has_note_numbering = bool(
             re.search(r"(?:^|[\s>])\d+\.\s*(일반사항|회계정책|종속기업|현금)", text_head)
@@ -116,7 +171,7 @@ class DocumentClassifier:
                 reason=f"exclude:{keyword}",
             )
 
-        if is_fs_body and score < 0.7 and not has_note_numbering:
+        if is_fs_body and score < fs_body_threshold and not has_note_numbering:
             return DartDocument(
                 path=html_path,
                 doc_type="financial_statements",
@@ -125,13 +180,16 @@ class DocumentClassifier:
                 reason="fs_body",
             )
 
-        if score >= 0.6 or has_note_numbering:
+        if score >= notes_threshold or has_note_numbering:
+            reason = f"keywords:{','.join(matched[:3])}" if matched else "note_numbering"
+            if self.profile != "general":
+                reason = f"profile:{self.profile};{reason}"
             return DartDocument(
                 path=html_path,
                 doc_type="notes",
                 fs_type=fs_type,
                 confidence=min(1.0, 0.4 + score / 3),
-                reason=f"keywords:{','.join(matched[:3])}" if matched else "note_numbering",
+                reason=reason,
             )
 
         return DartDocument(
@@ -156,7 +214,7 @@ class DocumentClassifier:
             return []
         candidates.sort(key=lambda x: x[1], reverse=True)
         top_path, top_tables = candidates[0]
-        if top_tables < 3:
+        if top_tables < self.TABLE_DENSITY_MIN_TABLES:
             return []
         return [
             DartDocument(
@@ -200,3 +258,25 @@ class DocumentClassifier:
         if "별도" in head or "개별" in head:
             return "separate"
         return None
+
+    @classmethod
+    def _resolve_profile(cls, company_name: str) -> str:
+        normalized = re.sub(r"\s+", "", str(company_name or ""))
+        if not normalized:
+            return "general"
+        if normalized in cls.COMPANY_PROFILE_OVERRIDES:
+            return cls.COMPANY_PROFILE_OVERRIDES[normalized]
+        if any(marker in normalized for marker in cls.FINANCE_NAME_MARKERS):
+            return "finance"
+        if any(marker in normalized for marker in cls.MANUFACTURING_NAME_MARKERS):
+            return "manufacturing"
+        return "general"
+
+    @staticmethod
+    def _score_keywords(text: str, keywords: dict[str, float], matched: list[str]) -> float:
+        score = 0.0
+        for keyword, weight in keywords.items():
+            if keyword in text:
+                score += weight
+                matched.append(keyword)
+        return score

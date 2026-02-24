@@ -36,7 +36,7 @@ REQUIRED_TAXONOMY_SECTIONS: tuple[str, ...] = (
     "segment_revenue",
     "revenue_detail",
 )
-STEP8_SUMMARY_SCHEMA_VERSION = "1.0"
+STEP8_SUMMARY_SCHEMA_VERSION = "1.1"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -203,6 +203,54 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--step8-strict-template",
         action="store_true",
         help="Fail if template file does not exist (default: auto-create workbook).",
+    )
+    parser.add_argument(
+        "--step8-normalizer-cache-policy",
+        choices=("read_write", "read_only", "bypass"),
+        default="read_write",
+        help=(
+            "Cache policy for Step6 normalizer: "
+            "read_write(default), read_only(cache-hit only), bypass(no read/no write)."
+        ),
+    )
+    parser.add_argument(
+        "--step8-enable-llm-normalize",
+        action="store_true",
+        help="Enable optional LLM mapping for unmapped Step6 accounts.",
+    )
+    parser.add_argument(
+        "--step8-llm-gateway-url",
+        default=None,
+        help="Override LLM gateway URL (default: settings.llm.gateway_url).",
+    )
+    parser.add_argument(
+        "--step8-llm-model",
+        default=None,
+        help="Override LLM model id (default: settings.llm.default_model).",
+    )
+    parser.add_argument(
+        "--step8-llm-timeout-seconds",
+        type=float,
+        default=20.0,
+        help="LLM gateway timeout seconds (default: 20).",
+    )
+    parser.add_argument(
+        "--step8-llm-max-calls",
+        type=int,
+        default=20,
+        help="Max LLM calls per Step8 run (default: 20).",
+    )
+    parser.add_argument(
+        "--step8-llm-min-unmapped",
+        type=int,
+        default=2,
+        help="Call LLM only when unmapped count is at least this value (default: 2).",
+    )
+    parser.add_argument(
+        "--step8-llm-max-unmapped",
+        type=int,
+        default=12,
+        help="Max unmapped accounts sent to one LLM call (default: 12).",
     )
     return parser.parse_args(argv)
 
@@ -646,8 +694,9 @@ def build_step8_summary_payload(
     infos: list[str],
     warnings: list[str],
     output_excel: Path,
+    metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "schema_version": STEP8_SUMMARY_SCHEMA_VERSION,
         "corp_code": corp_code,
         "company_name": company_name,
@@ -689,6 +738,255 @@ def build_step8_summary_payload(
         "warnings": list(warnings),
         "output_excel": str(output_excel),
     }
+    if isinstance(metrics, dict):
+        payload["metrics"] = metrics
+    return payload
+
+
+def classify_step8_warning_type(message: str) -> str:
+    text = str(message or "")
+    if "Track A 수집 실패" in text:
+        return "track_a_fetch"
+    if "최신 공시 조회/원문 다운로드 실패" in text:
+        return "report_fetch"
+    if "Track C 파싱 실패" in text:
+        return "track_c_parse"
+    if "Track B 파싱 실패" in text:
+        return "track_b_parse"
+    if "Step6 정규화/캐시 초기화 실패" in text:
+        return "normalizer_init"
+    if "taxonomy 파일이 없어 Step6 정규화를 건너뜀" in text:
+        return "taxonomy_missing"
+    if "시계열 데이터가 비어 있어" in text:
+        return "empty_timeseries"
+    if "Step8 요약 JSON 저장 실패" in text:
+        return "summary_save"
+    return "other"
+
+
+def summarize_step8_warning_types(messages: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for message in messages:
+        key = classify_step8_warning_type(message)
+        counts[key] = int(counts.get(key, 0)) + 1
+    return dict(sorted(counts.items(), key=lambda item: item[0]))
+
+
+def extract_step8_year_columns(df: Any, latest_report_year_hint: int | None = None) -> dict[Any, str]:
+    year_map: dict[Any, str] = {}
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return year_map
+
+    for col in df.columns[1:]:
+        col_s = str(col)
+        match = re.search(r"(20\d{2})", col_s)
+        if match:
+            year_map[col] = match.group(1)
+            continue
+        if col_s.isdigit() and len(col_s) == 4:
+            year_map[col] = col_s
+    if year_map:
+        return year_map
+
+    if latest_report_year_hint is None:
+        return year_map
+
+    symbolic_offsets = (
+        ("전전기말", 2),
+        ("전전반기", 2),
+        ("전전분기", 2),
+        ("전전기", 2),
+        ("전기말", 1),
+        ("전반기", 1),
+        ("전분기", 1),
+        ("전기", 1),
+        ("당기말", 0),
+        ("당반기", 0),
+        ("당분기", 0),
+        ("당기", 0),
+    )
+    for col in df.columns[1:]:
+        col_s = str(col).replace(" ", "")
+        for token, offset in symbolic_offsets:
+            if token in col_s:
+                year_map[col] = str(latest_report_year_hint - offset)
+                break
+    if year_map:
+        return year_map
+
+    # 제55기/제54기 같은 회기 표현을 최신 공시 연도 기준으로 보정한다.
+    term_map: dict[Any, int] = {}
+    for col in df.columns[1:]:
+        match = re.search(r"제\s*(\d+)\s*기", str(col))
+        if match:
+            term_map[col] = int(match.group(1))
+    if term_map:
+        max_term = max(term_map.values())
+        for col, term in term_map.items():
+            year_map[col] = str(latest_report_year_hint - (max_term - term))
+    if year_map:
+        return year_map
+
+    # 멀티헤더가 본문 행으로 내려온 경우(열명이 0,1,2...) 첫 행들에서 연도를 추정한다.
+    header_scan_rows = min(3, len(df))
+    seen_years: set[str] = set()
+    for col in df.columns[1:]:
+        hint_cells = [str(df.iloc[row_idx].get(col, "")).strip() for row_idx in range(header_scan_rows)]
+        hint_text = " ".join(hint_cells)
+        if "비중" in hint_text:
+            continue
+
+        detected_year: str | None = None
+        for cell in hint_cells:
+            match = re.search(r"(20\d{2})", cell)
+            if match:
+                detected_year = match.group(1)
+                break
+        if detected_year is None or detected_year in seen_years:
+            continue
+        seen_years.add(detected_year)
+        year_map[col] = detected_year
+    return year_map
+
+
+def to_step8_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if text in {"", "-", "nan", "NaN", "None"}:
+        return None
+    negative = text.startswith("(") and text.endswith(")")
+    if negative:
+        text = text[1:-1]
+    cleaned = (
+        text.replace(",", "")
+        .replace(" ", "")
+        .replace("\u00A0", "")
+        .replace("원", "")
+        .replace("백만원", "")
+        .replace("천원", "")
+    )
+    try:
+        number = float(cleaned)
+    except ValueError:
+        return None
+    return -number if negative else number
+
+
+def is_step8_segment_revenue_table(
+    note_title: str,
+    df: Any,
+    latest_report_year_hint: int | None = None,
+) -> bool:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return False
+    if len(df.columns) < 3:
+        return False
+
+    title_l = str(note_title or "").lower()
+    if not any(token in title_l for token in ("매출", "수익", "revenue", "sales")):
+        return False
+
+    first_col = df.columns[0]
+    first_labels = [str(x).strip() for x in df[first_col].tolist() if str(x).strip()]
+    has_segment_hint_in_rows = any(
+        ("부문" in label) or ("segment" in label.lower()) or ("division" in label.lower())
+        for label in first_labels[:30]
+    )
+    has_segment_hint_in_title = any(token in title_l for token in ("부문", "segment", "division"))
+    if not (has_segment_hint_in_rows or has_segment_hint_in_title):
+        return False
+
+    year_map = extract_step8_year_columns(df, latest_report_year_hint=latest_report_year_hint)
+    if len(year_map) < 2:
+        return False
+
+    valid_rows = 0
+    for _, row in df.iterrows():
+        key = str(row.get(first_col, "")).strip()
+        if not key or key.lower() == "nan":
+            continue
+        has_major_numeric = False
+        for col_name in year_map:
+            value = to_step8_number(row.get(col_name))
+            if value is not None and abs(value) >= 100_000:
+                has_major_numeric = True
+                break
+        if has_major_numeric:
+            valid_rows += 1
+        if valid_rows >= 2:
+            return True
+    return False
+
+
+def is_step8_single_segment_notice(note_title: str, df: Any) -> bool:
+    text_parts = [str(note_title or "")]
+    if isinstance(df, pd.DataFrame) and not df.empty:
+        first_col = df.columns[0]
+        row_samples = [str(x).strip() for x in df[first_col].tolist()[:8] if str(x).strip()]
+        text_parts.extend(row_samples)
+
+    normalized = " ".join(text_parts).lower().replace(" ", "")
+    markers = (
+        "단일사업부문",
+        "지배적단일사업부문",
+        "부문별기재를생략",
+        "singleoperatingsegment",
+        "singlereportablesegment",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def normalize_step8_row_label(label: str) -> str:
+    text = str(label or "").strip().lower()
+    text = re.sub(r"\s+", "", text)
+    text = (
+        text.replace("(", "")
+        .replace(")", "")
+        .replace(":", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace(".", "")
+    )
+    return text
+
+
+def is_step8_total_row_label(note_type: str, row_label: str) -> bool:
+    del note_type  # reserved for future note-type specific rules
+    normalized = normalize_step8_row_label(row_label)
+    return normalized in {"합계", "총계", "소계", "계"}
+
+
+def is_step8_noise_row_label(note_type: str, row_label: str) -> bool:
+    raw = str(row_label or "").strip()
+    if not raw:
+        return True
+    normalized = normalize_step8_row_label(raw)
+    if not normalized or normalized == "nan":
+        return True
+
+    if raw.startswith(("※", "*")):
+        return True
+    if any(token in raw for token in ("단위", "비고", "주석")):
+        return True
+    if raw.endswith(":"):
+        return True
+
+    if note_type == "segment_revenue":
+        if re.fullmatch(r"[A-Z]{3,4}", raw):
+            return True
+        if "가격 변동" in raw or "가격변동" in raw:
+            return True
+    return False
+
+
+def should_skip_step8_row(note_type: str, row_label: str) -> bool:
+    return is_step8_total_row_label(note_type, row_label) or is_step8_noise_row_label(
+        note_type,
+        row_label,
+    )
 
 
 def run_step1_actions(
@@ -1066,6 +1364,7 @@ def run_step8_actions(
 ) -> int:
     if not args.step8_run_pipeline:
         return -1
+    step8_started_at = time.perf_counter()
 
     from src.account_normalizer import AccountNormalizer, AccountNormalizerError  # pylint: disable=import-outside-toplevel
     from src.cache_db import CacheDB, CacheDBError  # pylint: disable=import-outside-toplevel
@@ -1095,9 +1394,58 @@ def run_step8_actions(
 
     warnings: list[str] = []
     infos: list[str] = []
+    normalizer_cache_policy = str(args.step8_normalizer_cache_policy).strip().lower()
+    llm_client: Any | None = None
+    llm_usage_payload: dict[str, Any] | None = None
+    normalizer_usage: Any | None = None
 
     if args.step8_skip_trackc and args.step8_strict_trackc:
         raise ConfigError("--step8-skip-trackc와 --step8-strict-trackc는 함께 사용할 수 없습니다.")
+    if args.step8_llm_timeout_seconds <= 0:
+        raise ConfigError("--step8-llm-timeout-seconds는 0보다 커야 합니다.")
+    if args.step8_llm_max_calls < 0:
+        raise ConfigError("--step8-llm-max-calls는 0 이상이어야 합니다.")
+    if args.step8_llm_min_unmapped < 1:
+        raise ConfigError("--step8-llm-min-unmapped는 1 이상이어야 합니다.")
+    if args.step8_llm_max_unmapped < 0:
+        raise ConfigError("--step8-llm-max-unmapped는 0 이상이어야 합니다.")
+    if (
+        args.step8_llm_max_unmapped > 0
+        and args.step8_llm_max_unmapped < args.step8_llm_min_unmapped
+    ):
+        raise ConfigError(
+            "--step8-llm-max-unmapped는 0이거나 --step8-llm-min-unmapped 이상이어야 합니다."
+        )
+
+    if args.step8_enable_llm_normalize:
+        from src.llm_client import (  # pylint: disable=import-outside-toplevel
+            BudgetedLLMClient,
+            LLMClientError,
+            OpenClawLLM,
+        )
+
+        llm_settings = settings.get("llm", {})
+        if not isinstance(llm_settings, dict):
+            llm_settings = {}
+        gateway_url = str(args.step8_llm_gateway_url or llm_settings.get("gateway_url", "")).strip()
+        model = str(args.step8_llm_model or llm_settings.get("default_model", "")).strip()
+        try:
+            llm_base = OpenClawLLM(
+                gateway_url=gateway_url,
+                model=model,
+                timeout_seconds=float(args.step8_llm_timeout_seconds),
+            )
+            llm_client = BudgetedLLMClient(
+                base_client=llm_base,
+                enabled=True,
+                max_calls=int(args.step8_llm_max_calls),
+            )
+            infos.append(
+                "Step6 LLM 정규화 활성화: "
+                f"gateway={gateway_url} model={model} max_calls={int(args.step8_llm_max_calls)}"
+            )
+        except LLMClientError as exc:
+            warnings.append(f"Step6 LLM 정규화 초기화 실패(비활성화): {exc}")
 
     try:
         dart = DartAPI(api_key=api_key, corp_db_path=corp_db_path)
@@ -1235,163 +1583,23 @@ def run_step8_actions(
     segment_mode = "pending"
 
     def _extract_year_columns(df: Any) -> dict[Any, str]:
-        year_map: dict[Any, str] = {}
-        if not isinstance(df, pd.DataFrame) or df.empty:
-            return year_map
-
-        for col in df.columns[1:]:
-            col_s = str(col)
-            match = re.search(r"(20\d{2})", col_s)
-            if match:
-                year_map[col] = match.group(1)
-                continue
-            if col_s.isdigit() and len(col_s) == 4:
-                year_map[col] = col_s
-        if year_map:
-            return year_map
-
-        if latest_report_year_hint is None:
-            return year_map
-
-        symbolic_offsets = (
-            ("전전기말", 2),
-            ("전전반기", 2),
-            ("전전분기", 2),
-            ("전전기", 2),
-            ("전기말", 1),
-            ("전반기", 1),
-            ("전분기", 1),
-            ("전기", 1),
-            ("당기말", 0),
-            ("당반기", 0),
-            ("당분기", 0),
-            ("당기", 0),
-        )
-        for col in df.columns[1:]:
-            col_s = str(col).replace(" ", "")
-            for token, offset in symbolic_offsets:
-                if token in col_s:
-                    year_map[col] = str(latest_report_year_hint - offset)
-                    break
-        if year_map:
-            return year_map
-
-        # 제55기/제54기 같은 회기 표현을 최신 공시 연도 기준으로 보정한다.
-        term_map: dict[Any, int] = {}
-        for col in df.columns[1:]:
-            match = re.search(r"제\s*(\d+)\s*기", str(col))
-            if match:
-                term_map[col] = int(match.group(1))
-        if term_map:
-            max_term = max(term_map.values())
-            for col, term in term_map.items():
-                year_map[col] = str(latest_report_year_hint - (max_term - term))
-        if year_map:
-            return year_map
-
-        # 멀티헤더가 본문 행으로 내려온 경우(열명이 0,1,2...) 첫 행들에서 연도를 추정한다.
-        header_scan_rows = min(3, len(df))
-        seen_years: set[str] = set()
-        for col in df.columns[1:]:
-            hint_cells = [str(df.iloc[row_idx].get(col, "")).strip() for row_idx in range(header_scan_rows)]
-            hint_text = " ".join(hint_cells)
-            if "비중" in hint_text:
-                continue
-
-            detected_year: str | None = None
-            for cell in hint_cells:
-                match = re.search(r"(20\d{2})", cell)
-                if match:
-                    detected_year = match.group(1)
-                    break
-            if detected_year is None or detected_year in seen_years:
-                continue
-            seen_years.add(detected_year)
-            year_map[col] = detected_year
-        return year_map
+        return extract_step8_year_columns(df, latest_report_year_hint=latest_report_year_hint)
 
     def _is_segment_revenue_table(note_title: str, df: Any) -> bool:
-        if not isinstance(df, pd.DataFrame) or df.empty:
-            return False
-        if len(df.columns) < 3:
-            return False
-
-        title_l = str(note_title or "").lower()
-        if not any(token in title_l for token in ("매출", "수익", "revenue", "sales")):
-            return False
-
-        first_col = df.columns[0]
-        first_labels = [str(x).strip() for x in df[first_col].tolist() if str(x).strip()]
-        has_segment_hint_in_rows = any(
-            ("부문" in label) or ("segment" in label.lower()) or ("division" in label.lower())
-            for label in first_labels[:30]
+        return is_step8_segment_revenue_table(
+            note_title=note_title,
+            df=df,
+            latest_report_year_hint=latest_report_year_hint,
         )
-        has_segment_hint_in_title = any(token in title_l for token in ("부문", "segment", "division"))
-        if not (has_segment_hint_in_rows or has_segment_hint_in_title):
-            return False
-
-        year_map = _extract_year_columns(df)
-        if len(year_map) < 2:
-            return False
-
-        valid_rows = 0
-        for _, row in df.iterrows():
-            key = str(row.get(first_col, "")).strip()
-            if not key or key.lower() == "nan":
-                continue
-            has_major_numeric = False
-            for col_name in year_map:
-                value = _to_number(row.get(col_name))
-                if value is not None and abs(value) >= 100_000:
-                    has_major_numeric = True
-                    break
-            if has_major_numeric:
-                valid_rows += 1
-            if valid_rows >= 2:
-                return True
-        return False
 
     def _is_single_segment_notice(note_title: str, df: Any) -> bool:
-        text_parts = [str(note_title or "")]
-        if isinstance(df, pd.DataFrame) and not df.empty:
-            first_col = df.columns[0]
-            row_samples = [str(x).strip() for x in df[first_col].tolist()[:8] if str(x).strip()]
-            text_parts.extend(row_samples)
-
-        normalized = " ".join(text_parts).lower().replace(" ", "")
-        markers = (
-            "단일사업부문",
-            "지배적단일사업부문",
-            "부문별기재를생략",
-            "singleoperatingsegment",
-            "singlereportablesegment",
-        )
-        return any(marker in normalized for marker in markers)
+        return is_step8_single_segment_notice(note_title, df)
 
     def _to_number(value: Any) -> float | None:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            return float(value)
-        text = str(value).strip()
-        if text in {"", "-", "nan", "NaN", "None"}:
-            return None
-        negative = text.startswith("(") and text.endswith(")")
-        if negative:
-            text = text[1:-1]
-        cleaned = (
-            text.replace(",", "")
-            .replace(" ", "")
-            .replace("\u00A0", "")
-            .replace("원", "")
-            .replace("백만원", "")
-            .replace("천원", "")
-        )
-        try:
-            number = float(cleaned)
-        except ValueError:
-            return None
-        return -number if negative else number
+        return to_step8_number(value)
+
+    def _should_skip_row(note_type: str, row_label: str) -> bool:
+        return should_skip_step8_row(note_type, row_label)
 
     def _merge_agg(target: dict[str, dict[str, float]], source: dict[str, dict[str, float]]) -> None:
         for account, yearly in source.items():
@@ -1402,7 +1610,7 @@ def run_step8_actions(
     if downloaded_files:
         doc_files = [p for p in downloaded_files if p.suffix.lower() in {".html", ".htm", ".xml"}]
         if doc_files:
-            classifier = DocumentClassifier()
+            classifier = DocumentClassifier(company_name=args.company_name)
             parser = HTMLParser()
             note_docs = classifier.find_notes_files(doc_files)
             consolidated_docs = [doc for doc in note_docs if doc.fs_type == "consolidated"]
@@ -1415,7 +1623,9 @@ def run_step8_actions(
                             normalizer = AccountNormalizer(
                                 taxonomy_path=str(taxonomy_path),
                                 cache_db=cache,
-                                llm_client=None,
+                                llm_client=llm_client,
+                                llm_min_unmapped_count=int(args.step8_llm_min_unmapped),
+                                llm_max_unmapped_count=int(args.step8_llm_max_unmapped),
                             )
 
                             for doc in target_docs:
@@ -1442,14 +1652,18 @@ def run_step8_actions(
 
                                     first_col = table.df.columns[0]
                                     raw_names = [
-                                        str(x).strip()
+                                        name
                                         for x in table.df[first_col].tolist()
-                                        if str(x).strip()
+                                        for name in [str(x).strip()]
+                                        if name and not _should_skip_row(table.note_type, name)
                                     ]
+                                    if not raw_names:
+                                        continue
                                     mapping = normalizer.normalize(
                                         note_type=table.note_type,
                                         account_names=raw_names,
                                         corp_code=corp_code,
+                                        cache_policy=normalizer_cache_policy,
                                     )
 
                                     year_map = _extract_year_columns(table.df)
@@ -1460,6 +1674,8 @@ def run_step8_actions(
                                     for _, row in table.df.iterrows():
                                         raw_name = str(row.get(first_col, "")).strip()
                                         if not raw_name:
+                                            continue
+                                        if _should_skip_row(table.note_type, raw_name):
                                             continue
                                         std_name = mapping.get(raw_name, raw_name)
                                         row_yearly: dict[str, float] = {}
@@ -1509,14 +1725,18 @@ def run_step8_actions(
 
                                         first_col = table.df.columns[0]
                                         raw_names = [
-                                            str(x).strip()
+                                            name
                                             for x in table.df[first_col].tolist()
-                                            if str(x).strip()
+                                            for name in [str(x).strip()]
+                                            if name and not _should_skip_row(table.note_type, name)
                                         ]
+                                        if not raw_names:
+                                            continue
                                         mapping = normalizer.normalize(
                                             note_type=table.note_type,
                                             account_names=raw_names,
                                             corp_code=corp_code,
+                                            cache_policy=normalizer_cache_policy,
                                         )
 
                                         year_map = _extract_year_columns(table.df)
@@ -1527,6 +1747,8 @@ def run_step8_actions(
                                         for _, row in table.df.iterrows():
                                             raw_name = str(row.get(first_col, "")).strip()
                                             if not raw_name:
+                                                continue
+                                            if _should_skip_row(table.note_type, raw_name):
                                                 continue
                                             std_name = mapping.get(raw_name, raw_name)
                                             row_yearly: dict[str, float] = {}
@@ -1545,6 +1767,8 @@ def run_step8_actions(
 
                                         _merge_agg(fallback_segment, local_agg)
 
+                            normalizer_usage = normalizer.usage()
+
                     except (CacheDBError, AccountNormalizerError) as exc:
                         warnings.append(f"Step6 정규화/캐시 초기화 실패: {exc}")
                 else:
@@ -1562,6 +1786,23 @@ def run_step8_actions(
         segment_mode = "skipped(no_segment_data)"
     else:
         segment_mode = "skipped(no_docs)"
+
+    if llm_client is not None and hasattr(llm_client, "usage"):
+        usage = llm_client.usage()
+        llm_usage_payload = {
+            "enabled": bool(usage.enabled),
+            "max_calls": int(usage.max_calls),
+            "calls_used": int(usage.calls_used),
+            "calls_blocked": int(usage.calls_blocked),
+            "calls_failed": int(usage.calls_failed),
+        }
+        infos.append(
+            "Step6 LLM usage: "
+            f"enabled={usage.enabled} max_calls={usage.max_calls} "
+            f"used={usage.calls_used} blocked={usage.calls_blocked} failed={usage.calls_failed} "
+            f"cache_policy={normalizer_cache_policy} "
+            f"unmapped_range={int(args.step8_llm_min_unmapped)}..{int(args.step8_llm_max_unmapped)}"
+        )
 
     try:
         writer = ExcelWriter(
@@ -1613,6 +1854,44 @@ def run_step8_actions(
     except Exception as exc:  # pylint: disable=broad-except
         raise ConfigError(f"엑셀 저장 실패: {exc}") from exc
 
+    normalizer_metrics: dict[str, Any] = {
+        "normalize_calls": 0,
+        "cache_read_attempts": 0,
+        "cache_hits": 0,
+        "cache_misses": 0,
+        "cache_writes": 0,
+        "cache_hit_rate": None,
+        "llm_calls": 0,
+        "llm_target_names": 0,
+    }
+    if normalizer_usage is not None:
+        normalizer_metrics["normalize_calls"] = int(getattr(normalizer_usage, "normalize_calls", 0))
+        normalizer_metrics["cache_read_attempts"] = int(
+            getattr(normalizer_usage, "cache_read_attempts", 0)
+        )
+        normalizer_metrics["cache_hits"] = int(getattr(normalizer_usage, "cache_hits", 0))
+        normalizer_metrics["cache_misses"] = int(getattr(normalizer_usage, "cache_misses", 0))
+        normalizer_metrics["cache_writes"] = int(getattr(normalizer_usage, "cache_writes", 0))
+        normalizer_metrics["llm_calls"] = int(getattr(normalizer_usage, "llm_calls", 0))
+        normalizer_metrics["llm_target_names"] = int(
+            getattr(normalizer_usage, "llm_target_names", 0)
+        )
+    if normalizer_metrics["cache_read_attempts"] > 0:
+        normalizer_metrics["cache_hit_rate"] = round(
+            normalizer_metrics["cache_hits"] / normalizer_metrics["cache_read_attempts"],
+            4,
+        )
+
+    step8_runtime_ms = int((time.perf_counter() - step8_started_at) * 1000)
+    warning_types = summarize_step8_warning_types(warnings)
+    metrics_payload: dict[str, Any] = {
+        "runtime_ms": step8_runtime_ms,
+        "normalizer": normalizer_metrics,
+        "warning_types": warning_types,
+    }
+    if llm_usage_payload is not None:
+        metrics_payload["llm"] = llm_usage_payload
+
     if args.step8_summary_path:
         summary_path = Path(str(args.step8_summary_path))
     else:
@@ -1645,6 +1924,7 @@ def run_step8_actions(
         infos=infos,
         warnings=warnings,
         output_excel=saved,
+        metrics=metrics_payload,
     )
     try:
         summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1671,6 +1951,11 @@ def run_step8_actions(
         f"[Step8] TrackB fallback: rcept_no={latest_rcept_no or '-'} "
         f"mode={segment_mode} docs={len(fallback_doc_paths)} tables={fallback_tables} "
         f"sga_rows={len(fallback_sga)} segment_rows={len(fallback_segment)}"
+    )
+    print(
+        f"[Step8] metrics: runtime_ms={step8_runtime_ms} "
+        f"cache_hit_rate={normalizer_metrics['cache_hit_rate']} "
+        f"warning_types={len(warning_types)}"
     )
 
     for summary in statement_summaries:

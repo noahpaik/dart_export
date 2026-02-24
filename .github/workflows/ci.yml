@@ -17,6 +17,21 @@ on:
         required: false
         type: boolean
         default: false
+      run_online_step8_regression:
+        description: "Run online Step8 integration regression gate"
+        required: false
+        type: boolean
+        default: false
+      run_online_step8_multi_report_regression:
+        description: "Run online Step8 multi-report regression gate (11012/11013/11014)"
+        required: false
+        type: boolean
+        default: false
+      run_online_step8_year_matrix_regression:
+        description: "Run online Step8 year-matrix regression gate (2022,2023,2024)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   offline-checks:
@@ -58,6 +73,8 @@ jobs:
           grep -q -- "--check-network" /tmp/main_help.txt
           grep -q -- "--step8-strict-trackc" /tmp/main_help.txt
           grep -q -- "--step8-skip-trackc" /tmp/main_help.txt
+          grep -q -- "--step8-enable-llm-normalize" /tmp/main_help.txt
+          grep -q -- "--step8-normalizer-cache-policy" /tmp/main_help.txt
 
   online-checks:
     runs-on: ubuntu-latest
@@ -70,6 +87,7 @@ jobs:
       }}
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      STEP8_ARTIFACT_ROOT: /tmp/step8_online_artifacts
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -95,4 +113,67 @@ jobs:
       - name: Track C Strict Online Gate
         if: ${{ inputs.run_online_strict_trackc == true }}
         run: |
-          python tests/online_trackc_strict_gate.py --years 2024 --min-success 1 --max-attempts 4
+          python tests/online_trackc_strict_gate.py --candidates 삼성전자,SK하이닉스 --years 2024 --min-success 2 --max-attempts 2
+
+      - name: Step8 Integration Online Regression
+        if: ${{ inputs.run_online_step8_regression == true }}
+        run: |
+          python tests/online_step8_integration_gate.py \
+            --companies 삼성전자,SK하이닉스,LG전자 \
+            --years 2024 \
+            --max-retries 3 \
+            --output-dir "${STEP8_ARTIFACT_ROOT}/base"
+
+      - name: Step8 Multi-Report Regression
+        if: ${{ inputs.run_online_step8_multi_report_regression == true }}
+        run: |
+          python tests/online_step8_integration_gate.py \
+            --companies 삼성전자,SK하이닉스,LG전자 \
+            --years 2024 \
+            --report-codes 11012,11013,11014 \
+            --max-retries 3 \
+            --min-success-per-report-code 1 \
+            --output-dir "${STEP8_ARTIFACT_ROOT}/multi_report"
+
+      - name: Step8 Year-Matrix Regression
+        if: ${{ inputs.run_online_step8_year_matrix_regression == true }}
+        run: |
+          python tests/online_step8_integration_gate.py \
+            --companies 삼성전자,SK하이닉스,LG전자 \
+            --years 2022,2023,2024 \
+            --report-codes 11011 \
+            --max-retries 3 \
+            --min-success-per-report-code 1 \
+            --output-dir "${STEP8_ARTIFACT_ROOT}/year_matrix"
+
+      - name: Collect Step8 Warning Metrics
+        if: >-
+          ${{
+            always() &&
+            (
+              inputs.run_online_step8_regression == true ||
+              inputs.run_online_step8_multi_report_regression == true ||
+              inputs.run_online_step8_year_matrix_regression == true
+            )
+          }}
+        run: |
+          python tests/collect_step8_warning_metrics.py \
+            --summary-root "${STEP8_ARTIFACT_ROOT}" \
+            --output-json "${STEP8_ARTIFACT_ROOT}/metrics/step8_warning_metrics.json" \
+            --output-md "${STEP8_ARTIFACT_ROOT}/metrics/step8_warning_metrics.md"
+
+      - name: Upload Step8 Metrics Artifact
+        if: >-
+          ${{
+            always() &&
+            (
+              inputs.run_online_step8_regression == true ||
+              inputs.run_online_step8_multi_report_regression == true ||
+              inputs.run_online_step8_year_matrix_regression == true
+            )
+          }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: step8-warning-metrics
+          path: /tmp/step8_online_artifacts
+          if-no-files-found: warn

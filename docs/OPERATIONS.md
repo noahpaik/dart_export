@@ -14,7 +14,7 @@ python3 main.py --check-network --verbose
 
 3. 핵심 플래그 확인
 ```bash
-python3 main.py -h | grep -E "check-network|step8-strict-trackc|step8-skip-trackc"
+python3 main.py -h | grep -E "check-network|step8-strict-trackc|step8-skip-trackc|step8-enable-llm-normalize|step8-normalizer-cache-policy"
 ```
 
 4. 단위 테스트
@@ -35,9 +35,23 @@ python3 main.py --step8-run-pipeline --company-name 삼성전자 --years 2022,20
 
 산출물:
 - 엑셀 파일: `data/*_model.xlsx`
-- 요약 파일: `data/*_model_summary.json` (기본, `schema_version=1.0`)
+- 요약 파일: `data/*_model_summary.json` (기본, `schema_version=1.1`)
 - 원문 캐시: `data/raw/<회사명 또는 corp_code>/`
 - 정규화 캐시: `data/cache.db`
+- 운영 지표: `metrics.runtime_ms`, `metrics.normalizer.cache_hit_rate`, `metrics.warning_types`
+
+선택 LLM 정규화 실행:
+```bash
+python3 main.py --step8-run-pipeline --company-name 삼성전자 --years 2022,2023,2024 \
+  --step8-enable-llm-normalize \
+  --step8-llm-max-calls 10 \
+  --step8-normalizer-cache-policy read_write
+```
+
+Step6 캐시 정책:
+- `read_write`(기본): 캐시 읽기/쓰기
+- `read_only`: 캐시 읽기만 수행
+- `bypass`: 캐시 사용 안 함
 
 ## 3) Track C 정책
 
@@ -99,3 +113,34 @@ python3 main.py --step8-run-pipeline --company-name 삼성전자 --years 2022,20
 1. PR 단계: `--check-config`, `py_compile`, `unittest`, CLI 플래그 존재 확인 통과
 2. 정기 점검: `--check-network --verbose` 성공 확인
 3. 릴리즈 점검: 표준 Step8 + 엄격 Step8(고정 샘플 또는 온라인 strict 게이트) 결과 보관
+4. 온라인 통합 회귀(선택): 고정 조합으로 Step8 요약 검증
+```bash
+python3 tests/online_step8_integration_gate.py --companies 삼성전자,SK하이닉스,LG전자 --years 2024 --max-retries 3
+```
+5. 온라인 분기/반기 회귀(선택): `11012/11013/11014`에서 최소 성공 건수 확인
+```bash
+python3 tests/online_step8_integration_gate.py \
+  --companies 삼성전자,SK하이닉스,LG전자 \
+  --years 2024 \
+  --report-codes 11012,11013,11014 \
+  --max-retries 2 \
+  --min-success-per-report-code 1
+```
+6. 온라인 연도 매트릭스 회귀(선택): `2022,2023,2024` 다개년 입력 검증
+```bash
+python3 tests/online_step8_integration_gate.py \
+  --companies 삼성전자,SK하이닉스,LG전자 \
+  --years 2022,2023,2024 \
+  --report-codes 11011 \
+  --max-retries 2 \
+  --min-success-per-report-code 1
+```
+7. Step8 경고 메트릭 집계(선택): 온라인 회귀 산출물 기준 집계 리포트 생성
+```bash
+python3 tests/collect_step8_warning_metrics.py \
+  --summary-root /tmp/step8_online_artifacts \
+  --output-json /tmp/step8_online_artifacts/metrics/step8_warning_metrics.json \
+  --output-md /tmp/step8_online_artifacts/metrics/step8_warning_metrics.md
+```
+8. CI 아티팩트 확인: 온라인 Step8 회귀가 실행된 경우 `step8-warning-metrics` 아티팩트에서
+   요약 JSON과 메트릭 리포트(`metrics/step8_warning_metrics.{json,md}`)를 함께 점검

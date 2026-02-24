@@ -7,10 +7,12 @@ DART 공시 데이터를 수집/정규화해 재무모델 엑셀(`data/*_model.x
 - Track A: DART 재무제표 API(`fnlttSinglAcntAll`) 다개년 수집
 - Track C: XBRL(`*_pre.xml`) 주석 구조 파싱
 - Track B fallback: HTML/XML 원문 테이블 파싱 + 정규화
+- Step6 선택 LLM 정규화: 호출 예산(`--step8-llm-max-calls`) + 캐시 정책(`--step8-normalizer-cache-policy`)
 - Step8: End-to-End 실행 + 엑셀 출력
 - Step8 요약 JSON 출력: `<output>_summary.json`
-  - 스키마 버전 필드: `schema_version` (현재 `1.0`)
+  - 스키마 버전 필드: `schema_version` (현재 `1.1`)
   - Track C 입력 소스: `track_c.source` (`xbrl_dir(option)`/`document.xml`/`fnlttXbrl.xml`)
+  - 운영 지표: `metrics.runtime_ms`, `metrics.normalizer.cache_hit_rate`, `metrics.warning_types`
 - 네트워크 진단: `--check-network` / `--check-network --verbose`
 
 ## 빠른 시작
@@ -59,6 +61,14 @@ python3 main.py --step8-run-pipeline --company-name 삼성전자 --years 2022,20
 python3 main.py --step8-run-pipeline --company-name 삼성전자 --years 2022,2023,2024 --step8-strict-trackc
 ```
 
+- Step6 LLM 정규화(선택)
+```bash
+python3 main.py --step8-run-pipeline --company-name 삼성전자 --years 2022,2023,2024 \
+  --step8-enable-llm-normalize \
+  --step8-llm-max-calls 10 \
+  --step8-normalizer-cache-policy read_write
+```
+
 ## Track C 운영 정책
 
 - 기본 모드: Track C 입력(`*_pre.xml`)이 없으면 실패하지 않고 `info`로 건너뜁니다.
@@ -81,6 +91,17 @@ python3 main.py --step8-run-pipeline --company-name 삼성전자 --years 2022,20
 - 예시 로그:
   - `Track B segment_revenue: 단일사업부문 공시로 부문별 매출 데이터가 없어 생략.`
 
+## Step6 정규화 옵션
+
+- 캐시 정책(`--step8-normalizer-cache-policy`)
+  - `read_write` (기본): 캐시 읽기/쓰기
+  - `read_only`: 캐시 읽기만, 미스 시 계산 후 캐시 미저장
+  - `bypass`: 캐시 무시
+- LLM 옵션(`--step8-enable-llm-normalize`)
+  - 기본 비활성화
+  - `--step8-llm-max-calls`로 1회 실행당 호출 상한 제한
+  - `--step8-llm-min-unmapped`/`--step8-llm-max-unmapped`로 unmapped 계정 수 범위 제한
+
 ## 문서
 
 - 구현 현황: `dart_pipeline_implementation_steps.md`
@@ -101,5 +122,46 @@ python3 main.py --step3-parse-xbrl --xbrl-dir tests/fixtures/trackc_strict_sampl
 
 Track C 온라인 strict 게이트(선택):
 ```bash
-python3 tests/online_trackc_strict_gate.py --years 2024 --min-success 1 --max-attempts 4
+python3 tests/online_trackc_strict_gate.py --candidates 삼성전자,SK하이닉스 --years 2024 --min-success 2 --max-attempts 2
+```
+
+Step8 온라인 통합 회귀 게이트(선택):
+```bash
+python3 tests/online_step8_integration_gate.py --companies 삼성전자,SK하이닉스,LG전자 --years 2024 --max-retries 3
+```
+
+Step8 온라인 분기/반기 회귀 게이트(선택):
+```bash
+python3 tests/online_step8_integration_gate.py \
+  --companies 삼성전자,SK하이닉스,LG전자 \
+  --years 2024 \
+  --report-codes 11012,11013,11014 \
+  --max-retries 2 \
+  --min-success-per-report-code 1
+```
+
+Step8 온라인 연도 매트릭스 회귀 게이트(선택):
+```bash
+python3 tests/online_step8_integration_gate.py \
+  --companies 삼성전자,SK하이닉스,LG전자 \
+  --years 2022,2023,2024 \
+  --report-codes 11011 \
+  --max-retries 2 \
+  --min-success-per-report-code 1
+```
+
+Step8 경고 메트릭 집계(로컬):
+```bash
+python3 tests/collect_step8_warning_metrics.py \
+  --summary-root /tmp/step8_online_artifacts \
+  --output-json /tmp/step8_online_artifacts/metrics/step8_warning_metrics.json \
+  --output-md /tmp/step8_online_artifacts/metrics/step8_warning_metrics.md
+```
+
+온라인 CI에서 Step8 회귀를 실행하면 아티팩트 `step8-warning-metrics`가 업로드되며,
+요약 파일과 집계 결과(`metrics/step8_warning_metrics.json`, `metrics/step8_warning_metrics.md`)를 함께 확인할 수 있습니다.
+
+Track B `segment_revenue` 수동 회귀검증(로컬 `data/raw` 샘플 필요):
+```bash
+python3 tests/manual_segment_revenue_regression.py
 ```

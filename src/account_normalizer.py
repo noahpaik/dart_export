@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
 import re
@@ -17,6 +18,17 @@ class AccountNormalizerError(RuntimeError):
     """Raised when account normalization fails."""
 
 
+@dataclass
+class AccountNormalizerUsage:
+    normalize_calls: int
+    cache_read_attempts: int
+    cache_hits: int
+    cache_misses: int
+    cache_writes: int
+    llm_calls: int
+    llm_target_names: int
+
+
 class AccountNormalizer:
     """
     Normalize note account names into taxonomy standard accounts.
@@ -27,6 +39,8 @@ class AccountNormalizer:
         taxonomy_path: str,
         cache_db: CacheDB,
         llm_client: Any | None = None,
+        llm_min_unmapped_count: int = 2,
+        llm_max_unmapped_count: int = 12,
     ):
         self.taxonomy_path = Path(taxonomy_path)
         if not self.taxonomy_path.exists():
@@ -34,6 +48,15 @@ class AccountNormalizer:
         self.taxonomy = self._load_taxonomy(self.taxonomy_path)
         self.cache = cache_db
         self.llm = llm_client
+        self.llm_min_unmapped_count = max(1, int(llm_min_unmapped_count))
+        self.llm_max_unmapped_count = max(0, int(llm_max_unmapped_count))
+        self._usage_normalize_calls = 0
+        self._usage_cache_read_attempts = 0
+        self._usage_cache_hits = 0
+        self._usage_cache_misses = 0
+        self._usage_cache_writes = 0
+        self._usage_llm_calls = 0
+        self._usage_llm_target_names = 0
 
     def _load_taxonomy(self, path: Path) -> dict[str, Any]:
         try:
@@ -62,9 +85,21 @@ class AccountNormalizer:
         account_names: list[str],
         corp_code: str,
         use_cache: bool = True,
+        cache_policy: str = "read_write",
     ) -> dict[str, str]:
         if not account_names:
             return {}
+        self._usage_normalize_calls += 1
+
+        normalized_cache_policy = str(cache_policy or "read_write").strip().lower()
+        valid_cache_policies = {"read_write", "read_only", "bypass"}
+        if normalized_cache_policy not in valid_cache_policies:
+            raise AccountNormalizerError(
+                f"지원하지 않는 cache_policy: {cache_policy} "
+                f"(허용: {', '.join(sorted(valid_cache_policies))})"
+            )
+        use_cache_read = bool(use_cache) and normalized_cache_policy in {"read_write", "read_only"}
+        use_cache_write = bool(use_cache) and normalized_cache_policy == "read_write"
 
         taxonomy_entry = self.taxonomy.get(note_type, {})
         if not isinstance(taxonomy_entry, dict):
@@ -81,10 +116,13 @@ class AccountNormalizer:
             aliases = {str(k).strip(): str(v).strip() for k, v in aliases_raw.items()}
 
         cache_key = self._make_cache_key(corp_code, note_type, [str(n) for n in account_names])
-        if use_cache:
+        if use_cache_read:
+            self._usage_cache_read_attempts += 1
             cached = self.cache.get(cache_key)
-            if cached:
+            if cached is not None:
+                self._usage_cache_hits += 1
                 return cached
+            self._usage_cache_misses += 1
 
         normalized_aliases = {self._normalize_name(k): v for k, v in aliases.items()}
         normalized_standard = {self._normalize_name(x): x for x in standard_accounts}
@@ -121,15 +159,20 @@ class AccountNormalizer:
             unmapped.append(raw)
 
         if unmapped and self.llm is not None and standard_accounts:
-            llm_mapping = self._llm_normalize(note_type, unmapped, standard_accounts)
-            mapping.update(llm_mapping)
+            if len(unmapped) >= self.llm_min_unmapped_count and self.llm_max_unmapped_count > 0:
+                llm_targets = unmapped[: self.llm_max_unmapped_count]
+                self._usage_llm_calls += 1
+                self._usage_llm_target_names += len(llm_targets)
+                llm_mapping = self._llm_normalize(note_type, llm_targets, standard_accounts)
+                mapping.update(llm_mapping)
 
         for name in unmapped:
             if name in mapping:
                 continue
             mapping[name] = self._default_fallback(note_type, standard_accounts, name)
 
-        if use_cache:
+        if use_cache_write:
+            self._usage_cache_writes += 1
             self.cache.set(
                 cache_key=cache_key,
                 mapping=mapping,
@@ -137,6 +180,17 @@ class AccountNormalizer:
                 note_type=note_type,
             )
         return mapping
+
+    def usage(self) -> AccountNormalizerUsage:
+        return AccountNormalizerUsage(
+            normalize_calls=int(self._usage_normalize_calls),
+            cache_read_attempts=int(self._usage_cache_read_attempts),
+            cache_hits=int(self._usage_cache_hits),
+            cache_misses=int(self._usage_cache_misses),
+            cache_writes=int(self._usage_cache_writes),
+            llm_calls=int(self._usage_llm_calls),
+            llm_target_names=int(self._usage_llm_target_names),
+        )
 
     def _heuristic_match(self, raw: str, standard_accounts: list[str]) -> str | None:
         if not standard_accounts:

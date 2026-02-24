@@ -65,6 +65,48 @@ class DocumentClassifierTests(unittest.TestCase):
             self.assertEqual(docs[0].doc_type, "notes")
             self.assertTrue(docs[0].reason.startswith("table_density:"))
 
+    def test_finance_profile_boosts_finance_note_keywords(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            path = self._write_text(
+                root,
+                "finance_note_like.xml",
+                """
+                <html>
+                  <title>연결재무정보</title>
+                  <body>순이자수익 및 대손충당금 변동내역</body>
+                </html>
+                """,
+            )
+
+            general_doc = DocumentClassifier().classify_documents([path])[0]
+            finance_doc = DocumentClassifier(company_name="KB금융").classify_documents([path])[0]
+
+            self.assertEqual(general_doc.doc_type, "other")
+            self.assertEqual(finance_doc.doc_type, "notes")
+            self.assertIn("profile:finance", finance_doc.reason)
+
+    def test_manufacturing_profile_boosts_segment_sales_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            path = self._write_text(
+                root,
+                "manufacturing_note_like.xml",
+                """
+                <html>
+                  <title>연결실적 정보</title>
+                  <body>영업부문 매출실적 및 수주상황</body>
+                </html>
+                """,
+            )
+
+            general_doc = DocumentClassifier().classify_documents([path])[0]
+            manufacturing_doc = DocumentClassifier(company_name="현대자동차").classify_documents([path])[0]
+
+            self.assertEqual(general_doc.doc_type, "other")
+            self.assertEqual(manufacturing_doc.doc_type, "notes")
+            self.assertIn("profile:manufacturing", manufacturing_doc.reason)
+
 
 if __name__ == "__main__":
     unittest.main()
