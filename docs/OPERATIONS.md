@@ -135,12 +135,30 @@ python3 tests/online_step8_integration_gate.py \
   --max-retries 2 \
   --min-success-per-report-code 1
 ```
-7. Step8 경고 메트릭 집계(선택): 온라인 회귀 산출물 기준 집계 리포트 생성
+7. 온라인 분기/반기 연도 매트릭스 회귀(선택): `11012/11013/11014` + `2022,2023,2024` 장기 입력 검증
+```bash
+python3 tests/online_step8_integration_gate.py \
+  --companies 삼성전자,SK하이닉스,LG전자 \
+  --years 2022,2023,2024 \
+  --report-codes 11012,11013,11014 \
+  --max-retries 2 \
+  --min-success-per-report-code 1
+```
+8. Step8 경고 메트릭 집계(선택): 온라인 회귀 산출물 기준 집계 리포트 생성
 ```bash
 python3 tests/collect_step8_warning_metrics.py \
   --summary-root /tmp/step8_online_artifacts \
   --output-json /tmp/step8_online_artifacts/metrics/step8_warning_metrics.json \
   --output-md /tmp/step8_online_artifacts/metrics/step8_warning_metrics.md
 ```
-8. CI 아티팩트 확인: 온라인 Step8 회귀가 실행된 경우 `step8-warning-metrics` 아티팩트에서
-   요약 JSON과 메트릭 리포트(`metrics/step8_warning_metrics.{json,md}`)를 함께 점검
+9. Step8 경고 메트릭 추이 리포트(선택): 최근 N회 비교 리포트 생성
+```bash
+python3 tests/collect_step8_warning_trends.py \
+  --current-metrics-json /tmp/step8_online_artifacts/metrics/step8_warning_metrics.json \
+  --history-dir /tmp/step8_online_artifacts/history \
+  --output-json /tmp/step8_online_artifacts/metrics/step8_warning_trends.json \
+  --output-md /tmp/step8_online_artifacts/metrics/step8_warning_trends.md \
+  --recent-runs 5
+```
+10. CI 아티팩트 확인: 온라인 Step8 회귀가 실행된 경우 `step8-warning-metrics` 아티팩트에서
+   메트릭 리포트(`metrics/step8_warning_metrics.{json,md}`)와 추이 리포트(`metrics/step8_warning_trends.{json,md}`)를 함께 점검

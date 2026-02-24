@@ -74,6 +74,20 @@ python3 tests/online_step8_integration_gate.py \
   --min-success-per-report-code 1
 ```
 
+선택 Step8 분기/반기 연도 매트릭스 회귀 게이트:
+- `workflow_dispatch`에서 `run_online_step8_multi_report_year_matrix_regression=true`
+- 입력 연도: `2022,2023,2024`
+- 대상 보고서코드: `11012`, `11013`, `11014`
+- 실행 스크립트:
+```bash
+python3 tests/online_step8_integration_gate.py \
+  --companies 삼성전자,SK하이닉스,LG전자 \
+  --years 2022,2023,2024 \
+  --report-codes 11012,11013,11014 \
+  --max-retries 3 \
+  --min-success-per-report-code 1
+```
+
 선택 Step8 연도 매트릭스 회귀 게이트:
 - `workflow_dispatch`에서 `run_online_step8_year_matrix_regression=true`
 - 입력 연도: `2022,2023,2024` (report_code=`11011`)
@@ -88,12 +102,16 @@ python3 tests/online_step8_integration_gate.py \
 ```
 
 온라인 Step8 회귀 실행 시 메트릭 아티팩트:
-- CI는 회귀 실행 요약을 `/tmp/step8_online_artifacts/{base,multi_report,year_matrix}`에 저장한다.
+- CI는 회귀 실행 요약을 `/tmp/step8_online_artifacts/{base,multi_report,multi_report_year_matrix,year_matrix}`에 저장한다.
 - `tests/collect_step8_warning_metrics.py`로 `metrics.warning_types`/runtime/mode를 집계한다.
+- `tests/collect_step8_warning_trends.py`로 최근 N회(`--recent-runs`) 추이 리포트를 생성한다.
+  - GitHub Actions API에서 `step8-warning-metrics` 아티팩트를 조회해 history를 보강한다.
 - 업로드 아티팩트 이름: `step8-warning-metrics`
 - 핵심 결과 파일:
   - `/tmp/step8_online_artifacts/metrics/step8_warning_metrics.json`
   - `/tmp/step8_online_artifacts/metrics/step8_warning_metrics.md`
+  - `/tmp/step8_online_artifacts/metrics/step8_warning_trends.json`
+  - `/tmp/step8_online_artifacts/metrics/step8_warning_trends.md`
 
 ## Track C 정책의 CI 적용
 
@@ -106,5 +124,7 @@ python3 tests/online_step8_integration_gate.py \
   Step8 요약 JSON(`track_a`, `track_b_fallback`, `track_c`, `metrics`)을 검증한다.
 - 온라인 Step8 분기/반기 회귀 게이트(선택): 동일 고정 조합으로
   `11012/11013/11014` 각 보고서코드에서 최소 성공 건수(`--min-success-per-report-code`)를 검증한다.
+- 온라인 Step8 분기/반기 연도 매트릭스 회귀 게이트(선택): 동일 고정 조합으로
+  `11012/11013/11014`와 다개년 입력(`2022,2023,2024`)을 함께 검증한다.
 - 온라인 Step8 연도 매트릭스 회귀 게이트(선택): 동일 고정 조합으로
   다개년 입력(`2022,2023,2024`)의 요약 `years` 일치 여부를 검증한다.

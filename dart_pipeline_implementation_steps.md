@@ -1,6 +1,6 @@
 # DART 파이프라인 구현 현황 및 다음 작업
 
-업데이트 일시: 2026-02-24
+업데이트 일시: 2026-02-24 (최종 반영)
 
 ## 1. 구현 원칙
 
@@ -20,8 +20,8 @@
 | Step 5 | 진행중 | 문서분류/HTML(XML 포함) 파싱 구현 완료, 품질 튜닝 남음 |
 | Step 6 | 진행중 | 정규화/캐시 연동 + LLM 옵션/예산/캐시정책 반영 완료, 운영 튜닝 남음 |
 | Step 7 | 완료 | `excel_writer.py` 구현 + Step8 파이프라인 통합 완료 |
-| Step 8 | 진행중 | E2E 구동/Track B 반영 완료, Track C 미존재 정책(정보/엄격옵션/상태코드) 반영 완료 |
-| Step 9 | 진행중 | `tests/` 스켈레톤 + 핵심 단위 테스트 + CI 연동 완료, 통합 회귀검증은 남음 |
+| Step 8 | 진행중 | E2E 구동 + 운영지표(`metrics`) + CI 아티팩트 집계 자동화 완료, 운영 튜닝 남음 |
+| Step 9 | 진행중 | 핵심 단위 테스트/온라인 회귀/CI 연동 완료, 장기 안정화 회귀 고도화 남음 |
 
 ## 3. 이번 사이클에서 완료한 핵심 항목
 
@@ -117,7 +117,7 @@
   - CI `workflow_dispatch` 입력: `run_online_strict_trackc=true`
   - 동작: 실공시 후보를 순차 실행해 최소 1건 `--step8-strict-trackc` 성공 요구
 - 단위 테스트 기준치 갱신
-  - 현재 기준 `31 tests` 통과
+  - 현재 기준 `45 tests` 통과
 
 ### G. Track C 입력 보강 (fnlttXbrl fallback)
 
@@ -157,7 +157,7 @@
   - `main.py`에서 `DocumentClassifier(company_name=args.company_name)` 사용
 - 검증
   - `tests/test_document_classifier.py` 프로파일 튜닝 테스트 2건 추가
-  - 전체 단위 테스트 `31 tests` 통과
+  - 전체 단위 테스트 `45 tests` 통과
 
 ### K. Step6 taxonomy alias 확장
 
@@ -170,7 +170,7 @@
   - alias 매핑 및 기본 fallback 동작 검증
 - 검증
   - `python3 main.py --check-config`
-  - `python3 -m unittest discover -s tests -v` (`31 tests` 통과)
+  - `python3 -m unittest discover -s tests -v` (`45 tests` 통과)
 
 ### L. Step6 숫자 노이즈/총계 행 처리 룰 강화
 
@@ -185,7 +185,7 @@
 - 검증
   - `tests/test_main_helpers.py`에 행 필터 테스트 3건 추가
   - `tests/manual_segment_revenue_regression.py` 회귀 `PASS` 유지
-  - 전체 단위 테스트 `31 tests` 통과
+  - 전체 단위 테스트 `45 tests` 통과
 
 ### M. Step8 운영 지표 자동 집계
 
@@ -219,6 +219,7 @@
   - `run_online_step8_year_matrix_regression=true`
 - 실측 결과(연간 `11011`, 고정 3사, years=`2022,2023,2024`, max_retries=2):
   - PASS 3 / FAIL 0
+  - PASS 기업: `삼성전자`, `SK하이닉스`, `LG전자`
 
 ### P. Step8 경고 메트릭 CI 아티팩트 집계 자동화
 
@@ -230,10 +231,55 @@
   - 집계 합산 정확성/Markdown 섹션 렌더링 검증
 - CI 반영:
   - `STEP8_ARTIFACT_ROOT=/tmp/step8_online_artifacts`
-  - 온라인 Step8 회귀별 `--output-dir` 분리(`base`, `multi_report`, `year_matrix`)
+  - 온라인 Step8 회귀별 `--output-dir` 분리(`base`, `multi_report`, `multi_report_year_matrix`, `year_matrix`)
   - 집계 단계 실행 후 아티팩트 `step8-warning-metrics` 업로드
 - 검증:
   - `python3 -m unittest discover -s tests -v` 통과
+  - `tests/collect_step8_warning_metrics.py --require-runs` 실측 집계 확인
+    - `run_count=3`, `year_sets["2022,2023,2024"]=3`, `parse_failures=0`
+
+### Q. 원격 반영 상태
+
+- 최신 커밋: `39fc808` (`feat: expand step8 regression and metrics automation`)
+- 반영 브랜치: `main`
+- 원격 반영: `origin/main` push 완료
+- 참고: SSH 인증키는 `~/.ssh/config`에서 `id_ed25519` 고정으로 정리 완료
+
+### R. Step8 분기/반기 연도 매트릭스 온라인 회귀 확장
+
+- CI `workflow_dispatch` 입력 추가
+  - `run_online_step8_multi_report_year_matrix_regression=true`
+- 검증 조합:
+  - 보고서코드: `11012`, `11013`, `11014`
+  - 입력 연도: `2022,2023,2024`
+  - 고정 기업: `삼성전자`, `SK하이닉스`, `LG전자`
+- 실행 스크립트:
+  - `python3 tests/online_step8_integration_gate.py --companies 삼성전자,SK하이닉스,LG전자 --years 2022,2023,2024 --report-codes 11012,11013,11014 --max-retries 2 --min-success-per-report-code 1`
+- 실측 결과:
+  - `11012`: PASS 3 / FAIL 0
+  - `11013`: PASS 3 / FAIL 0
+  - `11014`: PASS 3 / FAIL 0
+  - 전체: PASS 9 / FAIL 0
+
+### S. Step8 경고 메트릭 추이 리포트 자동화
+
+- `tests/collect_step8_warning_trends.py` 추가
+  - 현재 실행의 `step8_warning_metrics.json`을 기준점으로 사용
+  - GitHub Actions 아티팩트(`step8-warning-metrics`)에서 최근 N회 히스토리를 조회/다운로드
+  - 추이 산출물 생성:
+    - `metrics/step8_warning_trends.json`
+    - `metrics/step8_warning_trends.md`
+- 단위 테스트 추가: `tests/test_collect_step8_warning_trends.py`
+  - latest/previous delta 계산 검증
+  - history parse failure 처리 검증
+  - markdown 렌더링 검증
+- CI 반영:
+  - `Build Step8 Warning Trend Report` 단계 추가
+  - 조건: 온라인 Step8 회귀 입력 중 하나라도 실행된 경우
+  - 입력: `--recent-runs 5`, `--fetch-from-github`, `--github-repo`, `--github-token`
+- 실측(로컬 샘플 기준):
+  - `run_count=9`, `report_codes(11012/11013/11014)=각 3`, `year_sets(2022,2023,2024)=9`
+  - 추이 리포트 파일 생성 확인
 
 ## 4. 앞으로 해야 할 것 (우선순위)
 
@@ -267,7 +313,7 @@
 - 완료됨: `html_parser` 규칙/엣지케이스 테스트 5건 추가
   - 파일: `tests/test_html_parser.py`
   - 범위: 병합셀/다중헤더 파싱, 멀티헤더 연도 추정, 주석형 텍스트 테이블 제외, 단일사업부문 안내 감지
-- 완료됨: 단위 테스트 기준치 갱신(`31 tests` 통과)
+- 완료됨: 단위 테스트 기준치 갱신(`45 tests` 통과)
 - 완료됨: 온라인 Step8 통합 회귀 게이트 추가
   - 스크립트: `tests/online_step8_integration_gate.py`
   - CI `workflow_dispatch` 입력: `run_online_step8_regression=true`
@@ -281,7 +327,7 @@
 - 운영 지표
   - 실행시간, 캐시 히트율, warning 발생 유형 집계
 
-## 5. 바로 실행할 다음 TODO
+## 5. 다음 권장 TODO
 
-1. 완료됨: 운영 지표(`metrics.warning_types`)를 CI 아티팩트 대시보드로 집계
-2. 완료됨: 연도 매트릭스를 `2022,2023,2024`까지 확장한 장기 회귀 검증
+1. 완료됨: 분기/반기(`11012/11013/11014`)도 `2022,2023,2024` 연도 매트릭스로 확장해 장기 회귀 일관성 확인
+2. 완료됨: `step8-warning-metrics` 아티팩트의 추이 비교(최근 N회) 리포트 자동화

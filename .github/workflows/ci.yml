@@ -27,6 +27,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_online_step8_multi_report_year_matrix_regression:
+        description: "Run online Step8 multi-report year-matrix regression gate (11012/11013/11014, 2022-2024)"
+        required: false
+        type: boolean
+        default: false
       run_online_step8_year_matrix_regression:
         description: "Run online Step8 year-matrix regression gate (2022,2023,2024)"
         required: false
@@ -135,6 +140,17 @@ jobs:
             --min-success-per-report-code 1 \
             --output-dir "${STEP8_ARTIFACT_ROOT}/multi_report"
 
+      - name: Step8 Multi-Report Year-Matrix Regression
+        if: ${{ inputs.run_online_step8_multi_report_year_matrix_regression == true }}
+        run: |
+          python tests/online_step8_integration_gate.py \
+            --companies 삼성전자,SK하이닉스,LG전자 \
+            --years 2022,2023,2024 \
+            --report-codes 11012,11013,11014 \
+            --max-retries 3 \
+            --min-success-per-report-code 1 \
+            --output-dir "${STEP8_ARTIFACT_ROOT}/multi_report_year_matrix"
+
       - name: Step8 Year-Matrix Regression
         if: ${{ inputs.run_online_step8_year_matrix_regression == true }}
         run: |
@@ -153,6 +169,7 @@ jobs:
             (
               inputs.run_online_step8_regression == true ||
               inputs.run_online_step8_multi_report_regression == true ||
+              inputs.run_online_step8_multi_report_year_matrix_regression == true ||
               inputs.run_online_step8_year_matrix_regression == true
             )
           }}
@@ -162,6 +179,31 @@ jobs:
             --output-json "${STEP8_ARTIFACT_ROOT}/metrics/step8_warning_metrics.json" \
             --output-md "${STEP8_ARTIFACT_ROOT}/metrics/step8_warning_metrics.md"
 
+      - name: Build Step8 Warning Trend Report
+        if: >-
+          ${{
+            always() &&
+            (
+              inputs.run_online_step8_regression == true ||
+              inputs.run_online_step8_multi_report_regression == true ||
+              inputs.run_online_step8_multi_report_year_matrix_regression == true ||
+              inputs.run_online_step8_year_matrix_regression == true
+            )
+          }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python tests/collect_step8_warning_trends.py \
+            --current-metrics-json "${STEP8_ARTIFACT_ROOT}/metrics/step8_warning_metrics.json" \
+            --history-dir "${STEP8_ARTIFACT_ROOT}/history" \
+            --output-json "${STEP8_ARTIFACT_ROOT}/metrics/step8_warning_trends.json" \
+            --output-md "${STEP8_ARTIFACT_ROOT}/metrics/step8_warning_trends.md" \
+            --recent-runs 5 \
+            --fetch-from-github \
+            --github-repo "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}"
+
       - name: Upload Step8 Metrics Artifact
         if: >-
           ${{
@@ -169,6 +211,7 @@ jobs:
             (
               inputs.run_online_step8_regression == true ||
               inputs.run_online_step8_multi_report_regression == true ||
+              inputs.run_online_step8_multi_report_year_matrix_regression == true ||
               inputs.run_online_step8_year_matrix_regression == true
             )
           }}
