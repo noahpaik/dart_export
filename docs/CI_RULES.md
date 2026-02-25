@@ -95,6 +95,9 @@ python3 tests/online_step8_integration_gate.py --matrix-config config/online_ste
 - `tests/collect_step8_warning_trends.py`로 최근 N회(`--recent-runs`) 추이 리포트를 생성한다.
   - GitHub Actions API에서 `step8-warning-metrics` 아티팩트를 조회해 history를 보강한다.
   - 품질게이트 임계치(기본): `config/step8_warning_quality_gate.yaml`
+  - 최소 표본 수 가드레일: `min_run_count`, `min_run_count_by_report_code`
+  - 권장 시작값: `min_run_count=5`, `min_run_count_by_report_code=3`
+  - 현재 런타임 가드레일: global `4500`, `11011=4000`, `11012/11013/11014=5000`
   - 연간(`11011`)은 엄격, 분기/반기(`11012/11013/11014`)는 완화 임계치로 분리 운영
   - 임계치 초과 시 `--fail-on-quality-gate`로 온라인 CI 실패 처리
 - 업로드 아티팩트 이름: `step8-warning-metrics`

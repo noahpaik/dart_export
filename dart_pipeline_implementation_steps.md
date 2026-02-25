@@ -403,6 +403,61 @@
   - 검증:
     - `tests/collect_step8_warning_trends.py --quality-gate-config config/step8_warning_quality_gate.yaml --fail-on-quality-gate` 통과
 
+### V. Step8 운영 튜닝 1차 (품질게이트 표본 수 가드레일)
+
+- `tests/collect_step8_warning_trends.py` 확장
+  - 전역 최소 표본 수: `min_run_count`
+  - 보고서코드별 최소 표본 수: `min_run_count_by_report_code`
+  - 표본 수 미달 시 품질게이트를 `fail` 대신 `skipped` 처리해 초기/희소 표본 오탐 방지
+- 설정 반영: `config/step8_warning_quality_gate.yaml`
+  - `min_run_count: 3`
+  - `min_run_count_by_report_code: 2`
+- CLI override 추가
+  - `--quality-gate-min-run-count`
+  - `--quality-gate-min-run-count-by-report-code`
+- 테스트 보강
+  - `tests/test_collect_step8_warning_trends.py`에 최소 표본 수 스킵/코드별 임계치 적용 조건 케이스 추가
+
+### W. Step8 운영 튜닝 2차 (5회+ 운영데이터 기준 재보정)
+
+- 재보정 데이터셋(로컬 운영 아티팩트) 구성
+  - `year_matrix_3y`(3 runs), `multi_report_year_matrix_local`(9 runs),
+    `recalib_year_matrix`(3 runs), `recalib_multi_report_year_matrix`(9 runs),
+    `recalib_baseline_all`(12 runs), `recalib_current_all`(12 runs)
+  - 총 6개 포인트(5+ 충족) 기준으로 동일 프로파일 쌍 delta 점검
+- 관측 delta(대표)
+  - `warning_count`: 전 프로파일 `0`
+  - `runtime_avg_ms`: 개선 방향(음수) 유지
+    - year_matrix: `-642.66`
+    - multi_report_year_matrix: `-3142.55`
+    - all: `-2517.59`
+- 설정 재보정: `config/step8_warning_quality_gate.yaml`
+  - `min_run_count: 3 -> 5`
+  - `min_run_count_by_report_code: 2 -> 3`
+  - 목적: 표본 부족/부분 표본 비교에서 발생하는 품질게이트 오탐 추가 축소
+
+### X. Step8 운영 튜닝 3차 (온라인 회귀 1회 반영)
+
+- 실행(온라인 회귀 1회, all profile):
+  - `python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix all_reports_year_matrix --output-dir /tmp/step8_online_artifacts/recalib_run3_all`
+  - 결과: `pass=12 fail=0`
+- 신규 포인트 집계:
+  - `python3 tests/collect_step8_warning_metrics.py --summary-root /tmp/step8_online_artifacts/recalib_run3_all --output-json /tmp/step8_online_artifacts/recalib_out/point_recalib_run3_all_metrics.json --output-md /tmp/step8_online_artifacts/recalib_out/point_recalib_run3_all_metrics.md --require-runs`
+- run2→run3 비교(동일 all profile, 12 runs):
+  - `warning_count delta`: `0`
+  - `runtime_avg_ms delta`: `+809.67`
+  - 보고서코드별 runtime delta:
+    - `11011`: `+428.0`
+    - `11012`: `+77.33`
+    - `11013`: `+1607.0`
+    - `11014`: `+1126.33`
+- 설정 미세조정(런타임 임계치만 강화):
+  - 전역 `max_runtime_avg_ms_delta`: `5000 -> 4500`
+  - `11011 max_runtime_avg_ms_delta`: `4500 -> 4000`
+  - `11012/11013/11014 max_runtime_avg_ms_delta`: `5500 -> 5000`
+- 검증:
+  - `tests/collect_step8_warning_trends.py --current-metrics-json /tmp/step8_online_artifacts/recalib_out/point_recalib_run3_all_metrics.json --history-dir /tmp/step8_online_artifacts/recalib_history_run2_only --output-json /tmp/step8_online_artifacts/recalib_out/run3_vs_run2_trends_after_tune.json --output-md /tmp/step8_online_artifacts/recalib_out/run3_vs_run2_trends_after_tune.md --recent-runs 5 --quality-gate-config config/step8_warning_quality_gate.yaml --fail-on-quality-gate` 통과
+
 ## 4. 앞으로 해야 할 것 (우선순위, 2026-02-25 기준)
 
 ### 완료: Step 5/6 완료 판정 실행 및 상태 갱신

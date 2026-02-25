@@ -101,6 +101,23 @@ class CollectStep8WarningTrendsTests(unittest.TestCase):
         self.assertEqual(gate["status"], "skipped")
         self.assertEqual(gate["violations"], [])
 
+    def test_evaluate_quality_gate_skipped_when_min_run_count_not_met(self) -> None:
+        report = {
+            "latest": {"run_count": 2},
+            "previous": {"run_count": 2},
+            "deltas": {"warning_count": 10, "runtime_avg_ms": 9999.0},
+        }
+        gate = MODULE.evaluate_quality_gate(
+            report,
+            max_warning_delta=2,
+            max_runtime_avg_ms_delta=1000.0,
+            require_previous=False,
+            min_run_count=3,
+        )
+        self.assertEqual(gate["status"], "skipped")
+        self.assertEqual(gate["violations"], [])
+        self.assertTrue(any("min_run_count_not_met" in item for item in gate["skip_reasons"]))
+
     def test_evaluate_quality_gate_report_code_thresholds(self) -> None:
         report = {
             "latest": {"report_codes": {"11011": 3}},
@@ -123,6 +140,27 @@ class CollectStep8WarningTrendsTests(unittest.TestCase):
         self.assertEqual(gate["status"], "fail")
         self.assertTrue(any("report_code=11011 warning_count_delta=3 > 2" in item for item in gate["violations"]))
         self.assertTrue(any("report_code=11011 runtime_avg_ms_delta=5200.0 > 5000.0" in item for item in gate["violations"]))
+
+    def test_evaluate_quality_gate_report_code_thresholds_with_min_samples(self) -> None:
+        report = {
+            "latest": {"report_codes": {"11011": 1}},
+            "previous": {"report_codes": {"11011": 1}},
+            "deltas": {
+                "warning_count_by_report_code": {"11011": 3},
+                "runtime_avg_ms_by_report_code": {"11011": 5200.0},
+            },
+        }
+        gate = MODULE.evaluate_quality_gate(
+            report,
+            max_warning_delta=None,
+            max_runtime_avg_ms_delta=None,
+            require_previous=False,
+            min_run_count_by_report_code=2,
+            max_warning_delta_by_report_code={"11011": 2},
+            max_runtime_avg_ms_delta_by_report_code={"11011": 5000.0},
+        )
+        self.assertEqual(gate["status"], "pass")
+        self.assertEqual(gate["violations"], [])
 
     def test_evaluate_quality_gate_warning_type_threshold_and_ignore(self) -> None:
         report = {

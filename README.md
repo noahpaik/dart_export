@@ -179,6 +179,14 @@ python3 tests/collect_step8_warning_trends.py \
   --quality-gate-config config/step8_warning_quality_gate.yaml \
   --fail-on-quality-gate
 ```
+- 최소 표본 수 튜닝:
+  - 전역 실행 수: `quality_gate.min_run_count` (또는 `--quality-gate-min-run-count`)
+  - 보고서코드별 실행 수: `quality_gate.min_run_count_by_report_code`
+    (또는 `--quality-gate-min-run-count-by-report-code`)
+  - 권장 시작값: `min_run_count=5`, `min_run_count_by_report_code=3`
+- 현재 런타임 가드레일(기본):
+  - global `max_runtime_avg_ms_delta=4500`
+  - `11011=4000`, `11012/11013/11014=5000`
 
 온라인 CI에서 Step8 회귀를 실행하면 아티팩트 `step8-warning-metrics`가 업로드되며,
 요약/집계/추이 결과(`metrics/step8_warning_metrics.json`, `metrics/step8_warning_metrics.md`,

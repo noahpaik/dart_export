@@ -2,24 +2,31 @@ schema_version: 1
 quality_gate:
   # Global guardrails (fallback)
   max_warning_delta: 3
-  max_runtime_avg_ms_delta: 5000
+  # 3rd tuning(2026-02-25): tighten global runtime delta guardrail.
+  max_runtime_avg_ms_delta: 4500
   require_previous: false
+  # Skip gate on too-small samples to reduce false positives.
+  # 2nd tuning(2026-02-25): enforce 5+ runs baseline.
+  min_run_count: 5
+  # Apply report-code deltas only when both points have enough samples per code.
+  # 2nd tuning(2026-02-25): require full 3-company sample per report code.
+  min_run_count_by_report_code: 3
 
   # Report-code specific tuning
   # 11011(연간)은 상대적으로 안정적이어서 더 엄격, 분기/반기는 완화
   report_code_thresholds:
     "11011":
       max_warning_delta: 2
-      max_runtime_avg_ms_delta: 4500
+      max_runtime_avg_ms_delta: 4000
     "11012":
       max_warning_delta: 3
-      max_runtime_avg_ms_delta: 5500
+      max_runtime_avg_ms_delta: 5000
     "11013":
       max_warning_delta: 3
-      max_runtime_avg_ms_delta: 5500
+      max_runtime_avg_ms_delta: 5000
     "11014":
       max_warning_delta: 3
-      max_runtime_avg_ms_delta: 5500
+      max_runtime_avg_ms_delta: 5000
 
   # Warning type tuning
   max_warning_type_delta:

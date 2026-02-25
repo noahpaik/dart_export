@@ -509,10 +509,10 @@ def load_quality_gate_config(path: Path) -> dict[str, Any]:
     return raw
 
 
-def _parse_optional_int(value: Any, *, field: str) -> int | None:
+def _parse_optional_int(value: Any, *, field: str, minimum: int | None = None) -> int | None:
     if value is None:
         return None
-    return _to_int_strict(value, field=field)
+    return _to_int_strict(value, field=field, minimum=minimum)
 
 
 def _parse_optional_float(value: Any, *, field: str) -> float | None:
@@ -607,6 +607,16 @@ def resolve_quality_gate_options(args: argparse.Namespace) -> dict[str, Any]:
         raw_gate.get("require_previous"),
         field="quality_gate.require_previous",
     )
+    cfg_min_run_count = _parse_optional_int(
+        raw_gate.get("min_run_count"),
+        field="quality_gate.min_run_count",
+        minimum=1,
+    )
+    cfg_min_run_count_by_report_code = _parse_optional_int(
+        raw_gate.get("min_run_count_by_report_code"),
+        field="quality_gate.min_run_count_by_report_code",
+        minimum=1,
+    )
 
     cfg_warning_by_code_direct = _parse_threshold_int_map(
         raw_gate.get("max_warning_delta_by_report_code"),
@@ -647,6 +657,16 @@ def resolve_quality_gate_options(args: argparse.Namespace) -> dict[str, Any]:
             else cfg_max_runtime_delta
         ),
         "require_previous": bool(args.quality_gate_require_previous or bool(cfg_require_previous)),
+        "min_run_count": (
+            int(args.quality_gate_min_run_count)
+            if args.quality_gate_min_run_count is not None
+            else cfg_min_run_count
+        ),
+        "min_run_count_by_report_code": (
+            int(args.quality_gate_min_run_count_by_report_code)
+            if args.quality_gate_min_run_count_by_report_code is not None
+            else cfg_min_run_count_by_report_code
+        ),
         "max_warning_delta_by_report_code": dict(sorted(max_warning_delta_by_report_code.items())),
         "max_runtime_avg_ms_delta_by_report_code": dict(sorted(max_runtime_avg_ms_delta_by_report_code.items())),
         "max_warning_type_delta": dict(sorted(max_warning_type_deltas.items())),
@@ -661,6 +681,8 @@ def evaluate_quality_gate(
     max_warning_delta: int | None,
     max_runtime_avg_ms_delta: float | None,
     require_previous: bool,
+    min_run_count: int | None = None,
+    min_run_count_by_report_code: int | None = None,
     max_warning_delta_by_report_code: dict[str, int] | None = None,
     max_runtime_avg_ms_delta_by_report_code: dict[str, float] | None = None,
     max_warning_type_delta: dict[str, int] | None = None,
@@ -675,6 +697,8 @@ def evaluate_quality_gate(
         max_warning_delta is not None
         or max_runtime_avg_ms_delta is not None
         or bool(require_previous)
+        or min_run_count is not None
+        or min_run_count_by_report_code is not None
         or bool(warning_by_code_thresholds)
         or bool(runtime_by_code_thresholds)
         or bool(warning_type_thresholds)
@@ -686,12 +710,15 @@ def evaluate_quality_gate(
             "max_warning_delta": max_warning_delta,
             "max_runtime_avg_ms_delta": max_runtime_avg_ms_delta,
             "require_previous": bool(require_previous),
+            "min_run_count": min_run_count,
+            "min_run_count_by_report_code": min_run_count_by_report_code,
             "max_warning_delta_by_report_code": dict(sorted(warning_by_code_thresholds.items())),
             "max_runtime_avg_ms_delta_by_report_code": dict(sorted(runtime_by_code_thresholds.items())),
             "max_warning_type_delta": dict(sorted(warning_type_thresholds.items())),
             "ignore_warning_types": sorted(ignore_warning_types_set),
         },
         "violations": [],
+        "skip_reasons": [],
     }
     if not enabled:
         return gate
@@ -703,6 +730,24 @@ def evaluate_quality_gate(
             gate["violations"] = ["previous_run_missing"]
         else:
             gate["status"] = "skipped"
+        return gate
+
+    latest_point = report.get("latest") if isinstance(report.get("latest"), dict) else {}
+    previous_point = report.get("previous") if isinstance(report.get("previous"), dict) else {}
+
+    skip_reasons: list[str] = []
+    latest_run_count = _to_int((latest_point or {}).get("run_count"), 0)
+    previous_run_count = _to_int((previous_point or {}).get("run_count"), 0)
+    if min_run_count is not None:
+        required_min_run_count = int(min_run_count)
+        if latest_run_count < required_min_run_count or previous_run_count < required_min_run_count:
+            skip_reasons.append(
+                "min_run_count_not_met "
+                f"latest={latest_run_count} previous={previous_run_count} required={required_min_run_count}"
+            )
+    if skip_reasons:
+        gate["status"] = "skipped"
+        gate["skip_reasons"] = skip_reasons
         return gate
 
     deltas = report.get("deltas", {})
@@ -733,8 +778,7 @@ def evaluate_quality_gate(
             f"runtime_avg_ms_delta={runtime_delta_f} > {float(max_runtime_avg_ms_delta)}"
         )
 
-    latest = report.get("latest") if isinstance(report.get("latest"), dict) else {}
-    previous_point = report.get("previous") if isinstance(report.get("previous"), dict) else {}
+    latest = latest_point if isinstance(latest_point, dict) else {}
 
     latest_report_code_counts = _normalize_count_map((latest or {}).get("report_codes"))
     previous_report_code_counts = _normalize_count_map((previous_point or {}).get("report_codes"))
@@ -746,11 +790,23 @@ def evaluate_quality_gate(
     runtime_delta_by_code = deltas.get("runtime_avg_ms_by_report_code", {})
     if not isinstance(runtime_delta_by_code, dict):
         runtime_delta_by_code = {}
+    min_report_code_samples = (
+        int(min_run_count_by_report_code)
+        if min_run_count_by_report_code is not None
+        else None
+    )
 
     for report_code, threshold in sorted(warning_by_code_thresholds.items()):
-        if latest_report_code_counts.get(report_code, 0) <= 0:
+        latest_count = latest_report_code_counts.get(report_code, 0)
+        previous_count = previous_report_code_counts.get(report_code, 0)
+        if latest_count <= 0:
             continue
-        if previous_report_code_counts.get(report_code, 0) <= 0:
+        if previous_count <= 0:
+            continue
+        if (
+            min_report_code_samples is not None
+            and (latest_count < min_report_code_samples or previous_count < min_report_code_samples)
+        ):
             continue
         delta_i = _to_int(warning_delta_by_code.get(report_code), 0)
         if delta_i > int(threshold):
@@ -759,9 +815,16 @@ def evaluate_quality_gate(
             )
 
     for report_code, threshold in sorted(runtime_by_code_thresholds.items()):
-        if latest_report_code_counts.get(report_code, 0) <= 0:
+        latest_count = latest_report_code_counts.get(report_code, 0)
+        previous_count = previous_report_code_counts.get(report_code, 0)
+        if latest_count <= 0:
             continue
-        if previous_report_code_counts.get(report_code, 0) <= 0:
+        if previous_count <= 0:
+            continue
+        if (
+            min_report_code_samples is not None
+            and (latest_count < min_report_code_samples or previous_count < min_report_code_samples)
+        ):
             continue
         delta_f = _to_float(runtime_delta_by_code.get(report_code))
         if delta_f is None:
@@ -864,7 +927,12 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.append(
         f"- thresholds(global): warning_delta<={gate_thresholds.get('max_warning_delta')} "
         f"runtime_avg_ms_delta<={gate_thresholds.get('max_runtime_avg_ms_delta')} "
+        f"min_run_count>={gate_thresholds.get('min_run_count')} "
         f"require_previous={gate_thresholds.get('require_previous')}"
+    )
+    lines.append(
+        "- thresholds(by_report_code.min_run_count): "
+        f"`{gate_thresholds.get('min_run_count_by_report_code')}`"
     )
     lines.append(
         "- thresholds(by_report_code.warning): "
@@ -889,6 +957,13 @@ def render_markdown(report: dict[str, Any]) -> str:
             lines.append(f"  - `{item}`")
     else:
         lines.append("- violations: (none)")
+    skip_reasons = quality_gate.get("skip_reasons", [])
+    if skip_reasons:
+        lines.append("- skip_reasons:")
+        for item in skip_reasons:
+            lines.append(f"  - `{item}`")
+    else:
+        lines.append("- skip_reasons: (none)")
     lines.append("")
     lines.append("## Recent Points")
     if points:
@@ -1081,6 +1156,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Require at least one previous point for gate evaluation.",
     )
     parser.add_argument(
+        "--quality-gate-min-run-count",
+        type=int,
+        default=None,
+        help="Skip gate when latest/previous run_count is below this threshold.",
+    )
+    parser.add_argument(
+        "--quality-gate-min-run-count-by-report-code",
+        type=int,
+        default=None,
+        help="Require at least this many runs per report_code for code-level gate checks.",
+    )
+    parser.add_argument(
         "--fail-on-quality-gate",
         action="store_true",
         help="Exit with non-zero code when quality gate status is fail.",
@@ -1157,6 +1244,8 @@ def main(argv: list[str] | None = None) -> int:
         max_warning_delta=gate_options.get("max_warning_delta"),
         max_runtime_avg_ms_delta=gate_options.get("max_runtime_avg_ms_delta"),
         require_previous=bool(gate_options.get("require_previous")),
+        min_run_count=gate_options.get("min_run_count"),
+        min_run_count_by_report_code=gate_options.get("min_run_count_by_report_code"),
         max_warning_delta_by_report_code=gate_options.get("max_warning_delta_by_report_code", {}),
         max_runtime_avg_ms_delta_by_report_code=gate_options.get("max_runtime_avg_ms_delta_by_report_code", {}),
         max_warning_type_delta=gate_options.get("max_warning_type_delta", {}),

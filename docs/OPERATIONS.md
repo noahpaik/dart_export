@@ -159,6 +159,13 @@ python3 tests/collect_step8_warning_trends.py \
 11. CI 아티팩트 확인: 온라인 Step8 회귀가 실행된 경우 `step8-warning-metrics` 아티팩트에서
    메트릭 리포트(`metrics/step8_warning_metrics.{json,md}`)와 추이 리포트(`metrics/step8_warning_trends.{json,md}`)를 함께 점검
 12. 임계치 튜닝: `config/step8_warning_quality_gate.yaml`에서 전역/보고서코드별/경고유형별 임계치를 조정
+   - 표본 수 가드레일도 함께 조정
+   - `min_run_count`: 전역 최소 실행 수
+   - `min_run_count_by_report_code`: 코드별 delta 비교 최소 실행 수
+   - 현재 권장 시작값: `min_run_count=5`, `min_run_count_by_report_code=3`
+   - 현재 런타임 가드레일(기본):
+     - global `max_runtime_avg_ms_delta=4500`
+     - `11011=4000`, `11012/11013/11014=5000`
 
 ## 6) 정기 배치(schedule) 실패 대응
 
