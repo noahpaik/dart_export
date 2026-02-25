@@ -2,7 +2,8 @@
 """Online Step8 integration regression gate.
 
 This script runs real Step8 pipeline executions and validates summary payloads.
-It is intended for workflow_dispatch runs with DART_API_KEY configured.
+By default it loads matrix profiles and company validation rules from
+`config/online_step8_matrix.yaml`.
 """
 
 from __future__ import annotations
@@ -16,10 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
 
-DEFAULT_COMPANIES = ["삼성전자", "SK하이닉스", "LG전자"]
-DEFAULT_REPORT_CODES = ["11011"]
+
 SCHEMA_VERSION = "1.1"
+DEFAULT_MATRIX_CONFIG_PATH = Path("config/online_step8_matrix.yaml")
+DEFAULT_OUTPUT_DIR = "/tmp/step8_online_regression_gate"
 
 
 @dataclass
@@ -29,7 +32,17 @@ class CompanyRule:
     require_single_segment_notice: bool
 
 
-COMPANY_RULES: dict[str, CompanyRule] = {
+@dataclass
+class MatrixProfile:
+    companies: list[str]
+    years: str
+    report_codes: list[str]
+    max_retries: int
+    retry_delay_seconds: float
+    min_success_per_report_code: int
+
+
+BUILTIN_COMPANY_RULES: dict[str, CompanyRule] = {
     "삼성전자": CompanyRule(
         allowed_segment_modes=("parsed",),
         min_segment_rows_when_parsed=1,
@@ -65,47 +78,233 @@ def to_safe_token(value: str) -> str:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run online Step8 integration regression gate.")
     parser.add_argument(
+        "--matrix-config",
+        default=str(DEFAULT_MATRIX_CONFIG_PATH),
+        help=(
+            "Path to matrix configuration YAML "
+            f"(default: {DEFAULT_MATRIX_CONFIG_PATH})."
+        ),
+    )
+    parser.add_argument(
+        "--matrix",
+        default=None,
+        help="Matrix profile name defined in matrix config (default: config.default_matrix).",
+    )
+    parser.add_argument(
+        "--list-matrices",
+        action="store_true",
+        help="List matrix profiles from config and exit.",
+    )
+    parser.add_argument(
         "--companies",
-        default=",".join(DEFAULT_COMPANIES),
-        help="Comma-separated companies to verify.",
+        default=None,
+        help="Comma-separated companies to verify (overrides matrix).",
     )
     parser.add_argument(
         "--years",
-        default="2024",
-        help="Years passed to Step8 (default: 2024).",
+        default=None,
+        help="Years passed to Step8 (overrides matrix).",
     )
     parser.add_argument(
         "--report-codes",
-        default=",".join(DEFAULT_REPORT_CODES),
-        help="Comma-separated report codes to verify (default: 11011).",
+        default=None,
+        help="Comma-separated report codes to verify (overrides matrix).",
     )
     parser.add_argument(
         "--max-retries",
         type=int,
-        default=3,
-        help="Maximum retries per company on transient failures (default: 3).",
+        default=None,
+        help="Maximum retries per company on transient failures (overrides matrix).",
     )
     parser.add_argument(
         "--retry-delay-seconds",
         type=float,
-        default=2.0,
-        help="Sleep seconds between retries (default: 2.0).",
+        default=None,
+        help="Sleep seconds between retries (overrides matrix).",
     )
     parser.add_argument(
         "--output-dir",
-        default="/tmp/step8_online_regression_gate",
-        help="Directory for temporary Step8 outputs.",
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Directory for temporary Step8 outputs (default: {DEFAULT_OUTPUT_DIR}).",
     )
     parser.add_argument(
         "--min-success-per-report-code",
         type=int,
-        default=0,
+        default=None,
         help=(
-            "Minimum PASS count required per report code (default: 0, "
-            "which means all company checks must pass)."
+            "Minimum PASS count required per report code "
+            "(overrides matrix)."
         ),
     )
     return parser.parse_args(argv)
+
+
+def _to_int(value: Any, *, field: str, minimum: int | None = None) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an integer: {value!r}") from exc
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{field} must be >= {minimum}: {parsed}")
+    return parsed
+
+
+def _to_float(value: Any, *, field: str, minimum: float | None = None) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a number: {value!r}") from exc
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{field} must be >= {minimum}: {parsed}")
+    return parsed
+
+
+def _to_bool(value: Any, *, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off"}:
+            return False
+    raise ValueError(f"{field} must be boolean: {value!r}")
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def parse_csv_or_list(value: Any, *, field: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [token.strip() for token in value.split(",") if token.strip()]
+        return _dedupe(items)
+    if isinstance(value, list):
+        items = [str(token).strip() for token in value if str(token).strip()]
+        return _dedupe(items)
+    raise ValueError(f"{field} must be comma-separated string or list: {value!r}")
+
+
+def parse_years_csv(value: str) -> list[str]:
+    years = [str(x).strip() for x in str(value or "").split(",") if str(x).strip()]
+    return _dedupe(years)
+
+
+def normalize_years_value(value: Any, *, field: str) -> str:
+    years = parse_csv_or_list(value, field=field)
+    if not years:
+        raise ValueError(f"{field} must not be empty")
+    return ",".join(years)
+
+
+def parse_company_rule(company: str, raw: Any) -> CompanyRule:
+    if not isinstance(raw, dict):
+        raise ValueError(f"company_rules.{company} must be a mapping")
+
+    allowed_segment_modes = tuple(
+        parse_csv_or_list(raw.get("allowed_segment_modes"), field=f"company_rules.{company}.allowed_segment_modes")
+    )
+    if not allowed_segment_modes:
+        raise ValueError(f"company_rules.{company}.allowed_segment_modes must not be empty")
+
+    return CompanyRule(
+        allowed_segment_modes=allowed_segment_modes,
+        min_segment_rows_when_parsed=_to_int(
+            raw.get("min_segment_rows_when_parsed", 1),
+            field=f"company_rules.{company}.min_segment_rows_when_parsed",
+            minimum=0,
+        ),
+        require_single_segment_notice=_to_bool(
+            raw.get("require_single_segment_notice", False),
+            field=f"company_rules.{company}.require_single_segment_notice",
+        ),
+    )
+
+
+def parse_matrix_profile(name: str, raw: Any) -> MatrixProfile:
+    if not isinstance(raw, dict):
+        raise ValueError(f"profiles.{name} must be a mapping")
+
+    companies = parse_csv_or_list(raw.get("companies"), field=f"profiles.{name}.companies")
+    report_codes = parse_csv_or_list(raw.get("report_codes"), field=f"profiles.{name}.report_codes")
+    if not companies:
+        raise ValueError(f"profiles.{name}.companies must not be empty")
+    if not report_codes:
+        raise ValueError(f"profiles.{name}.report_codes must not be empty")
+
+    years = normalize_years_value(raw.get("years"), field=f"profiles.{name}.years")
+    max_retries = _to_int(raw.get("max_retries", 3), field=f"profiles.{name}.max_retries", minimum=1)
+    retry_delay_seconds = _to_float(
+        raw.get("retry_delay_seconds", 2.0),
+        field=f"profiles.{name}.retry_delay_seconds",
+        minimum=0.0,
+    )
+    min_success_per_report_code = _to_int(
+        raw.get("min_success_per_report_code", 0),
+        field=f"profiles.{name}.min_success_per_report_code",
+        minimum=0,
+    )
+
+    return MatrixProfile(
+        companies=companies,
+        years=years,
+        report_codes=report_codes,
+        max_retries=max_retries,
+        retry_delay_seconds=retry_delay_seconds,
+        min_success_per_report_code=min_success_per_report_code,
+    )
+
+
+def load_matrix_config(path: Path) -> tuple[dict[str, CompanyRule], dict[str, MatrixProfile], str]:
+    if not path.exists():
+        raise FileNotFoundError(f"matrix config not found: {path}")
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("matrix config root must be a mapping")
+
+    company_rules: dict[str, CompanyRule] = dict(BUILTIN_COMPANY_RULES)
+    raw_rules = raw.get("company_rules", {})
+    if raw_rules is not None:
+        if not isinstance(raw_rules, dict):
+            raise ValueError("company_rules must be a mapping")
+        for company, rule_raw in raw_rules.items():
+            company_name = str(company).strip()
+            if not company_name:
+                continue
+            company_rules[company_name] = parse_company_rule(company_name, rule_raw)
+
+    raw_profiles = raw.get("profiles")
+    if not isinstance(raw_profiles, dict) or not raw_profiles:
+        raise ValueError("profiles must be a non-empty mapping")
+
+    profiles: dict[str, MatrixProfile] = {}
+    for name, profile_raw in raw_profiles.items():
+        profile_name = str(name).strip()
+        if not profile_name:
+            continue
+        profiles[profile_name] = parse_matrix_profile(profile_name, profile_raw)
+
+    if not profiles:
+        raise ValueError("no valid profiles in matrix config")
+
+    default_matrix = str(raw.get("default_matrix") or "").strip()
+    if not default_matrix:
+        default_matrix = "base" if "base" in profiles else next(iter(profiles))
+    if default_matrix not in profiles:
+        raise ValueError(f"default_matrix not found in profiles: {default_matrix}")
+
+    return company_rules, profiles, default_matrix
 
 
 def run_step8(company: str, years: str, report_code: str, output_dir: Path) -> tuple[int, str, Path]:
@@ -151,20 +350,11 @@ def extract_error_snippet(output: str) -> str:
     return "no_output"
 
 
-def _to_int(value: Any, default: int = 0) -> int:
+def _to_int_safe(value: Any, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
-
-
-def parse_years_csv(value: str) -> list[str]:
-    years = [str(x).strip() for x in str(value or "").split(",") if str(x).strip()]
-    normalized: list[str] = []
-    for year in years:
-        if year not in normalized:
-            normalized.append(year)
-    return normalized
 
 
 def validate_summary(
@@ -172,6 +362,7 @@ def validate_summary(
     report_code: str,
     expected_years: list[str],
     payload: dict[str, Any],
+    company_rules: dict[str, CompanyRule],
 ) -> list[str]:
     errors: list[str] = []
     expected_report_code = str(report_code).strip()
@@ -189,9 +380,9 @@ def validate_summary(
         )
 
     track_a = payload.get("track_a", {})
-    if _to_int(track_a.get("bs_rows")) <= 0:
+    if _to_int_safe(track_a.get("bs_rows")) <= 0:
         errors.append(f"track_a.bs_rows={track_a.get('bs_rows')} (expected > 0)")
-    if _to_int(track_a.get("cf_rows")) <= 0:
+    if _to_int_safe(track_a.get("cf_rows")) <= 0:
         errors.append(f"track_a.cf_rows={track_a.get('cf_rows')} (expected > 0)")
 
     track_c_mode = str(payload.get("track_c", {}).get("mode", ""))
@@ -206,7 +397,7 @@ def validate_summary(
     if not isinstance(metrics, dict):
         errors.append("metrics is missing")
     else:
-        if _to_int(metrics.get("runtime_ms")) <= 0:
+        if _to_int_safe(metrics.get("runtime_ms")) <= 0:
             errors.append(f"metrics.runtime_ms={metrics.get('runtime_ms')} (expected > 0)")
         warning_types = metrics.get("warning_types")
         if not isinstance(warning_types, dict):
@@ -217,7 +408,7 @@ def validate_summary(
 
     track_b = payload.get("track_b_fallback", {})
     segment_mode = str(track_b.get("mode", ""))
-    segment_rows = _to_int(track_b.get("segment_rows"))
+    segment_rows = _to_int_safe(track_b.get("segment_rows"))
     sources = track_b.get("single_segment_sources", [])
     infos = payload.get("infos", [])
     has_single_segment_notice = bool(sources) or any("단일사업부문" in str(x) for x in infos)
@@ -236,7 +427,7 @@ def validate_summary(
             errors.append("track_b_fallback.segment_rows=0 (expected > 0 when parsed)")
         return errors
 
-    rule = COMPANY_RULES.get(company)
+    rule = company_rules.get(company)
     if rule is None:
         if segment_mode not in {"parsed", "skipped(single_segment_notice)", "skipped(no_segment_data)"}:
             errors.append(f"track_b_fallback.mode={segment_mode} (unexpected)")
@@ -269,6 +460,7 @@ def run_company_with_retries(
     output_dir: Path,
     max_retries: int,
     retry_delay_seconds: float,
+    company_rules: dict[str, CompanyRule],
 ) -> tuple[bool, str]:
     attempts = max(1, int(max_retries))
     for attempt in range(1, attempts + 1):
@@ -297,7 +489,7 @@ def run_company_with_retries(
         except Exception as exc:  # pylint: disable=broad-except
             return False, f"summary parse failed: {exc}"
 
-        errors = validate_summary(company, report_code, expected_years, payload)
+        errors = validate_summary(company, report_code, expected_years, payload, company_rules)
         if errors:
             return False, "; ".join(errors)
 
@@ -314,11 +506,78 @@ def run_company_with_retries(
     return False, "unknown"
 
 
+def list_matrices(profiles: dict[str, MatrixProfile], default_matrix: str) -> None:
+    print(f"[online-step8] matrices default={default_matrix}")
+    for name in sorted(profiles):
+        profile = profiles[name]
+        print(
+            "[online-step8] matrix="
+            f"{name} companies={','.join(profile.companies)} years={profile.years} "
+            f"report_codes={','.join(profile.report_codes)} "
+            f"max_retries={profile.max_retries} "
+            f"min_success_per_report_code={profile.min_success_per_report_code}"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    companies = [x.strip() for x in str(args.companies).split(",") if x.strip()]
-    report_codes = [x.strip() for x in str(args.report_codes).split(",") if x.strip()]
-    expected_years = parse_years_csv(str(args.years))
+
+    matrix_config_path = Path(str(args.matrix_config).strip())
+    try:
+        company_rules, profiles, default_matrix = load_matrix_config(matrix_config_path)
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"[online-step8] matrix_config_error path={matrix_config_path} detail={exc}")
+        return 2
+
+    if args.list_matrices:
+        list_matrices(profiles, default_matrix)
+        return 0
+
+    matrix_name = str(args.matrix or default_matrix).strip()
+    profile = profiles.get(matrix_name)
+    if profile is None:
+        print(
+            f"[online-step8] unknown matrix: {matrix_name} "
+            f"(available: {','.join(sorted(profiles))})"
+        )
+        return 2
+
+    try:
+        companies = (
+            parse_csv_or_list(args.companies, field="--companies")
+            if args.companies is not None
+            else list(profile.companies)
+        )
+        years = (
+            normalize_years_value(args.years, field="--years")
+            if args.years is not None
+            else str(profile.years)
+        )
+        report_codes = (
+            parse_csv_or_list(args.report_codes, field="--report-codes")
+            if args.report_codes is not None
+            else list(profile.report_codes)
+        )
+        max_retries = (
+            _to_int(args.max_retries, field="--max-retries", minimum=1)
+            if args.max_retries is not None
+            else int(profile.max_retries)
+        )
+        retry_delay_seconds = (
+            _to_float(args.retry_delay_seconds, field="--retry-delay-seconds", minimum=0.0)
+            if args.retry_delay_seconds is not None
+            else float(profile.retry_delay_seconds)
+        )
+        min_success_per_report_code = (
+            _to_int(args.min_success_per_report_code, field="--min-success-per-report-code", minimum=0)
+            if args.min_success_per_report_code is not None
+            else int(profile.min_success_per_report_code)
+        )
+    except ValueError as exc:
+        print(f"[online-step8] invalid_argument detail={exc}")
+        return 2
+
+    expected_years = parse_years_csv(years)
     if not companies:
         print("[online-step8] no companies")
         return 2
@@ -333,9 +592,10 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(
-        f"[online-step8] start companies={','.join(companies)} years={args.years} "
-        f"report_codes={','.join(report_codes)} max_retries={args.max_retries} "
-        f"min_success_per_report_code={args.min_success_per_report_code}"
+        f"[online-step8] start matrix={matrix_name} matrix_config={matrix_config_path} "
+        f"companies={','.join(companies)} years={years} "
+        f"report_codes={','.join(report_codes)} max_retries={max_retries} "
+        f"min_success_per_report_code={min_success_per_report_code}"
     )
 
     pass_by_code: dict[str, list[str]] = {code: [] for code in report_codes}
@@ -345,12 +605,13 @@ def main(argv: list[str] | None = None) -> int:
         for company in companies:
             ok, detail = run_company_with_retries(
                 company=company,
-                years=str(args.years),
+                years=years,
                 report_code=report_code,
                 expected_years=expected_years,
                 output_dir=output_dir,
-                max_retries=int(args.max_retries),
-                retry_delay_seconds=float(args.retry_delay_seconds),
+                max_retries=max_retries,
+                retry_delay_seconds=retry_delay_seconds,
+                company_rules=company_rules,
             )
             if ok:
                 pass_by_code[report_code].append(company)
@@ -373,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
                 + ",".join(f"{company}:{detail}" for company, detail in fails)
             )
 
-    min_success = max(0, int(args.min_success_per_report_code))
+    min_success = max(0, int(min_success_per_report_code))
     if min_success > 0:
         unmet = [
             report_code

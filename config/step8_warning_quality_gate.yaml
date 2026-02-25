@@ -1,0 +1,31 @@
+schema_version: 1
+quality_gate:
+  # Global guardrails (fallback)
+  max_warning_delta: 3
+  max_runtime_avg_ms_delta: 5000
+  require_previous: false
+
+  # Report-code specific tuning
+  # 11011(연간)은 상대적으로 안정적이어서 더 엄격, 분기/반기는 완화
+  report_code_thresholds:
+    "11011":
+      max_warning_delta: 2
+      max_runtime_avg_ms_delta: 4500
+    "11012":
+      max_warning_delta: 3
+      max_runtime_avg_ms_delta: 5500
+    "11013":
+      max_warning_delta: 3
+      max_runtime_avg_ms_delta: 5500
+    "11014":
+      max_warning_delta: 3
+      max_runtime_avg_ms_delta: 5500
+
+  # Warning type tuning
+  max_warning_type_delta:
+    empty_timeseries: 2
+
+  # Known noisy/expected warnings can be ignored at delta gate level
+  ignore_warning_types:
+    - single_segment_notice
+    - track_b_single_segment_notice

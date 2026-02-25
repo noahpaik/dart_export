@@ -5,6 +5,9 @@ on:
     branches:
       - "**"
   pull_request:
+  schedule:
+    # Daily at 03:00 UTC
+    - cron: "0 3 * * *"
   workflow_dispatch:
     inputs:
       run_online_checks:
@@ -86,9 +89,14 @@ jobs:
     needs: offline-checks
     if: >-
       ${{
-        github.event_name == 'workflow_dispatch' &&
-        inputs.run_online_checks == true &&
-        secrets.DART_API_KEY != ''
+        secrets.DART_API_KEY != '' &&
+        (
+          github.event_name == 'schedule' ||
+          (
+            github.event_name == 'workflow_dispatch' &&
+            inputs.run_online_checks == true
+          )
+        )
       }}
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
@@ -116,50 +124,75 @@ jobs:
           python main.py --step1-latest-report --company-name 삼성전자 --year 2024 --report-code 11011
 
       - name: Track C Strict Online Gate
-        if: ${{ inputs.run_online_strict_trackc == true }}
+        if: >-
+          ${{
+            github.event_name == 'schedule' ||
+            (
+              github.event_name == 'workflow_dispatch' &&
+              inputs.run_online_strict_trackc == true
+            )
+          }}
         run: |
           python tests/online_trackc_strict_gate.py --candidates 삼성전자,SK하이닉스 --years 2024 --min-success 2 --max-attempts 2
 
       - name: Step8 Integration Online Regression
-        if: ${{ inputs.run_online_step8_regression == true }}
+        if: >-
+          ${{
+            github.event_name == 'schedule' ||
+            (
+              github.event_name == 'workflow_dispatch' &&
+              inputs.run_online_step8_regression == true
+            )
+          }}
         run: |
           python tests/online_step8_integration_gate.py \
-            --companies 삼성전자,SK하이닉스,LG전자 \
-            --years 2024 \
-            --max-retries 3 \
+            --matrix-config config/online_step8_matrix.yaml \
+            --matrix base \
             --output-dir "${STEP8_ARTIFACT_ROOT}/base"
 
       - name: Step8 Multi-Report Regression
-        if: ${{ inputs.run_online_step8_multi_report_regression == true }}
+        if: >-
+          ${{
+            github.event_name == 'schedule' ||
+            (
+              github.event_name == 'workflow_dispatch' &&
+              inputs.run_online_step8_multi_report_regression == true
+            )
+          }}
         run: |
           python tests/online_step8_integration_gate.py \
-            --companies 삼성전자,SK하이닉스,LG전자 \
-            --years 2024 \
-            --report-codes 11012,11013,11014 \
-            --max-retries 3 \
-            --min-success-per-report-code 1 \
+            --matrix-config config/online_step8_matrix.yaml \
+            --matrix multi_report \
             --output-dir "${STEP8_ARTIFACT_ROOT}/multi_report"
 
       - name: Step8 Multi-Report Year-Matrix Regression
-        if: ${{ inputs.run_online_step8_multi_report_year_matrix_regression == true }}
+        if: >-
+          ${{
+            github.event_name == 'schedule' ||
+            (
+              github.event_name == 'workflow_dispatch' &&
+              inputs.run_online_step8_multi_report_year_matrix_regression == true
+            )
+          }}
         run: |
           python tests/online_step8_integration_gate.py \
-            --companies 삼성전자,SK하이닉스,LG전자 \
-            --years 2022,2023,2024 \
-            --report-codes 11012,11013,11014 \
-            --max-retries 3 \
-            --min-success-per-report-code 1 \
+            --matrix-config config/online_step8_matrix.yaml \
+            --matrix multi_report_year_matrix \
             --output-dir "${STEP8_ARTIFACT_ROOT}/multi_report_year_matrix"
 
       - name: Step8 Year-Matrix Regression
-        if: ${{ inputs.run_online_step8_year_matrix_regression == true }}
+        if: >-
+          ${{
+            github.event_name == 'schedule' ||
+            (
+              github.event_name == 'workflow_dispatch' &&
+              inputs.run_online_step8_year_matrix_regression == true
+            )
+          }}
         run: |
           python tests/online_step8_integration_gate.py \
-            --companies 삼성전자,SK하이닉스,LG전자 \
-            --years 2022,2023,2024 \
-            --report-codes 11011 \
-            --max-retries 3 \
-            --min-success-per-report-code 1 \
+            --matrix-config config/online_step8_matrix.yaml \
+            --matrix year_matrix \
             --output-dir "${STEP8_ARTIFACT_ROOT}/year_matrix"
 
       - name: Collect Step8 Warning Metrics
@@ -167,10 +200,16 @@ jobs:
           ${{
             always() &&
             (
-              inputs.run_online_step8_regression == true ||
-              inputs.run_online_step8_multi_report_regression == true ||
-              inputs.run_online_step8_multi_report_year_matrix_regression == true ||
-              inputs.run_online_step8_year_matrix_regression == true
+              github.event_name == 'schedule' ||
+              (
+                github.event_name == 'workflow_dispatch' &&
+                (
+                  inputs.run_online_step8_regression == true ||
+                  inputs.run_online_step8_multi_report_regression == true ||
+                  inputs.run_online_step8_multi_report_year_matrix_regression == true ||
+                  inputs.run_online_step8_year_matrix_regression == true
+                )
+              )
             )
           }}
         run: |
@@ -184,10 +223,16 @@ jobs:
           ${{
             always() &&
             (
-              inputs.run_online_step8_regression == true ||
-              inputs.run_online_step8_multi_report_regression == true ||
-              inputs.run_online_step8_multi_report_year_matrix_regression == true ||
-              inputs.run_online_step8_year_matrix_regression == true
+              github.event_name == 'schedule' ||
+              (
+                github.event_name == 'workflow_dispatch' &&
+                (
+                  inputs.run_online_step8_regression == true ||
+                  inputs.run_online_step8_multi_report_regression == true ||
+                  inputs.run_online_step8_multi_report_year_matrix_regression == true ||
+                  inputs.run_online_step8_year_matrix_regression == true
+                )
+              )
             )
           }}
         env:
@@ -202,17 +247,25 @@ jobs:
             --recent-runs 5 \
             --fetch-from-github \
             --github-repo "${GITHUB_REPOSITORY}" \
-            --github-token "${GITHUB_TOKEN}"
+            --github-token "${GITHUB_TOKEN}" \
+            --quality-gate-config "config/step8_warning_quality_gate.yaml" \
+            --fail-on-quality-gate
 
       - name: Upload Step8 Metrics Artifact
         if: >-
           ${{
             always() &&
             (
-              inputs.run_online_step8_regression == true ||
-              inputs.run_online_step8_multi_report_regression == true ||
-              inputs.run_online_step8_multi_report_year_matrix_regression == true ||
-              inputs.run_online_step8_year_matrix_regression == true
+              github.event_name == 'schedule' ||
+              (
+                github.event_name == 'workflow_dispatch' &&
+                (
+                  inputs.run_online_step8_regression == true ||
+                  inputs.run_online_step8_multi_report_regression == true ||
+                  inputs.run_online_step8_multi_report_year_matrix_regression == true ||
+                  inputs.run_online_step8_year_matrix_regression == true
+                )
+              )
             )
           }}
         uses: actions/upload-artifact@v4

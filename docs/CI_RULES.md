@@ -3,7 +3,7 @@
 ## 기본 원칙
 
 - CI 기본 파이프라인은 네트워크 비의존 검증만 수행한다.
-- 온라인(DART API) 검증은 수동 트리거(`workflow_dispatch`) + 시크릿 존재 시에만 수행한다.
+- 온라인(DART API) 검증은 수동 트리거(`workflow_dispatch`) 또는 정기 배치(`schedule`) + 시크릿 존재 시에만 수행한다.
 - Track C 품질게이트는 샘플/픽스처가 준비된 경우에만 `strict` 모드로 검증한다.
 
 ## 필수 체크 (기본 CI)
@@ -36,8 +36,9 @@ python3 main.py -h | grep -E -- "--check-network|--step8-strict-trackc|--step8-s
 ## 선택 체크 (온라인 CI)
 
 조건:
-- `workflow_dispatch`에서 `run_online_checks=true`
+- `workflow_dispatch`에서 `run_online_checks=true` 또는 `schedule` 이벤트
 - `DART_API_KEY` 시크릿 존재
+- 회귀 매트릭스/검증 규칙: `config/online_step8_matrix.yaml`
 
 실행:
 ```bash
@@ -58,7 +59,7 @@ python3 tests/online_trackc_strict_gate.py --candidates 삼성전자,SK하이닉
 - 고정 조합: `삼성전자(2024)`, `SK하이닉스(2024)`, `LG전자(2024)`
 - 실행 스크립트:
 ```bash
-python3 tests/online_step8_integration_gate.py --companies 삼성전자,SK하이닉스,LG전자 --years 2024 --max-retries 3
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix base
 ```
 
 선택 Step8 분기/반기 회귀 게이트:
@@ -66,12 +67,7 @@ python3 tests/online_step8_integration_gate.py --companies 삼성전자,SK하이
 - 대상 보고서코드: `11012`, `11013`, `11014`
 - 실행 스크립트:
 ```bash
-python3 tests/online_step8_integration_gate.py \
-  --companies 삼성전자,SK하이닉스,LG전자 \
-  --years 2024 \
-  --report-codes 11012,11013,11014 \
-  --max-retries 3 \
-  --min-success-per-report-code 1
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix multi_report
 ```
 
 선택 Step8 분기/반기 연도 매트릭스 회귀 게이트:
@@ -80,12 +76,7 @@ python3 tests/online_step8_integration_gate.py \
 - 대상 보고서코드: `11012`, `11013`, `11014`
 - 실행 스크립트:
 ```bash
-python3 tests/online_step8_integration_gate.py \
-  --companies 삼성전자,SK하이닉스,LG전자 \
-  --years 2022,2023,2024 \
-  --report-codes 11012,11013,11014 \
-  --max-retries 3 \
-  --min-success-per-report-code 1
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix multi_report_year_matrix
 ```
 
 선택 Step8 연도 매트릭스 회귀 게이트:
@@ -93,25 +84,33 @@ python3 tests/online_step8_integration_gate.py \
 - 입력 연도: `2022,2023,2024` (report_code=`11011`)
 - 실행 스크립트:
 ```bash
-python3 tests/online_step8_integration_gate.py \
-  --companies 삼성전자,SK하이닉스,LG전자 \
-  --years 2022,2023,2024 \
-  --report-codes 11011 \
-  --max-retries 3 \
-  --min-success-per-report-code 1
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix year_matrix
 ```
 
 온라인 Step8 회귀 실행 시 메트릭 아티팩트:
+- 수동/정기 배치 모두 동일한 경로를 사용한다:
+  - `/tmp/step8_online_artifacts/{base,multi_report,multi_report_year_matrix,year_matrix}`
 - CI는 회귀 실행 요약을 `/tmp/step8_online_artifacts/{base,multi_report,multi_report_year_matrix,year_matrix}`에 저장한다.
 - `tests/collect_step8_warning_metrics.py`로 `metrics.warning_types`/runtime/mode를 집계한다.
 - `tests/collect_step8_warning_trends.py`로 최근 N회(`--recent-runs`) 추이 리포트를 생성한다.
   - GitHub Actions API에서 `step8-warning-metrics` 아티팩트를 조회해 history를 보강한다.
+  - 품질게이트 임계치(기본): `config/step8_warning_quality_gate.yaml`
+  - 연간(`11011`)은 엄격, 분기/반기(`11012/11013/11014`)는 완화 임계치로 분리 운영
+  - 임계치 초과 시 `--fail-on-quality-gate`로 온라인 CI 실패 처리
 - 업로드 아티팩트 이름: `step8-warning-metrics`
 - 핵심 결과 파일:
   - `/tmp/step8_online_artifacts/metrics/step8_warning_metrics.json`
   - `/tmp/step8_online_artifacts/metrics/step8_warning_metrics.md`
   - `/tmp/step8_online_artifacts/metrics/step8_warning_trends.json`
   - `/tmp/step8_online_artifacts/metrics/step8_warning_trends.md`
+
+정기 배치(`schedule`) 기본 실행 범위:
+- `Track C Strict Online Gate`
+- `Step8 Integration Online Regression`
+- `Step8 Multi-Report Regression`
+- `Step8 Multi-Report Year-Matrix Regression`
+- `Step8 Year-Matrix Regression`
+- 이후 메트릭 집계/추이/아티팩트 업로드 단계
 
 ## Track C 정책의 CI 적용
 

@@ -1,6 +1,6 @@
 # DART 파이프라인 구현 현황 및 다음 작업
 
-업데이트 일시: 2026-02-24 (최종 반영)
+업데이트 일시: 2026-02-25 (Step 5/6 DoD 검증 반영)
 
 ## 1. 구현 원칙
 
@@ -17,11 +17,82 @@
 | Step 2 | 완료 | `fnlttSinglAcntAll` 수집 + 시계열 병합 구현 + 네트워크 복원력 보강 |
 | Step 3 | 완료 | XBRL `pre/lab` 파싱 + 역할/계정/멤버 추출 구현 |
 | Step 4 | 완료 | `cal.xml` 검증 + `def.xml` 구조 파싱 구현 |
-| Step 5 | 진행중 | 문서분류/HTML(XML 포함) 파싱 구현 완료, 품질 튜닝 남음 |
-| Step 6 | 진행중 | 정규화/캐시 연동 + LLM 옵션/예산/캐시정책 반영 완료, 운영 튜닝 남음 |
+| Step 5 | 완료 | DoD 검증(2026-02-25) 통과: 단위/수동/온라인 회귀 및 오탐지 방지 확인 |
+| Step 6 | 완료 | DoD 검증(2026-02-25) 통과: 정규화/캐시/LLM/메트릭 스키마/온라인 회귀 확인 |
 | Step 7 | 완료 | `excel_writer.py` 구현 + Step8 파이프라인 통합 완료 |
 | Step 8 | 진행중 | E2E 구동 + 운영지표(`metrics`) + CI 아티팩트 집계 자동화 완료, 운영 튜닝 남음 |
 | Step 9 | 진행중 | 핵심 단위 테스트/온라인 회귀/CI 연동 완료, 장기 안정화 회귀 고도화 남음 |
+
+## 2-1. Step 5/6 완료 판정 기준 (DoD)
+
+### Step 5 완료기준 (파싱 품질)
+
+1. HTML/문서 파싱 단위테스트 통과
+   - `python3 -m unittest -v tests/test_html_parser.py tests/test_document_classifier.py`
+2. 수동 회귀 통과
+   - `python3 tests/manual_segment_revenue_regression.py`
+3. 온라인 고정 회귀(3사, 3개년, 4개 보고서코드) 통과
+   - `python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix all_reports_year_matrix`
+4. 주석형 텍스트 테이블 오탐지 없음
+   - 단위테스트(`test_segment_revenue_filter_rejects_text_comment_table`) + 회귀 결과 기준
+5. 위 1~4 증빙 로그 확보 후 Step 5 상태를 `완료`로 상향
+
+### Step 6 완료기준 (정규화/캐시/LLM 운영)
+
+1. 정규화/LLM 단위테스트 통과
+   - `python3 -m unittest -v tests/test_account_normalizer.py tests/test_llm_client.py tests/test_main_helpers.py`
+2. 캐시 정책 동작 보장
+   - `read_write`: 재실행 시 cache hit 발생
+   - `read_only`: cache write 없음
+   - `bypass`: cache read/write 없음
+3. LLM 예산/가드레일 동작 보장
+   - `max_calls` 초과 시 차단
+   - 게이트웨이 실패 시 파이프라인 크래시 없이 경고/정보 처리
+4. Step8 summary 스키마 보장
+   - `metrics.normalizer`, `metrics.warning_types` 필드 항상 포함
+5. 온라인 고정 회귀(3사, 3개년, 4개 보고서코드)에서 정규화 관련 치명적 회귀 없음
+6. 위 1~5 증빙 로그 확보 후 Step 6 상태를 `완료`로 상향
+
+## 2-2. Step 5/6 DoD 검증 실행 로그 (2026-02-25)
+
+### Step 5 검증 로그
+
+- 실행: `python3 -m unittest -v tests/test_html_parser.py tests/test_document_classifier.py`
+  - 결과: `Ran 10 tests ... OK`
+  - 포함 확인: `test_segment_revenue_filter_rejects_text_comment_table ... ok`
+- 실행: `python3 tests/manual_segment_revenue_regression.py`
+  - 결과:
+    - `company=삼성전자 accepted=1 single_segment_notices=0`
+    - `company=SK하이닉스 accepted=0 single_segment_notices=1`
+    - `company=현대자동차 accepted=1 single_segment_notices=0`
+    - 최종: `PASS`
+- 실행: `python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix all_reports_year_matrix`
+  - 결과: `pass=12 fail=0`
+  - 보고서코드별:
+    - `11011: pass=3 fail=0`
+    - `11012: pass=3 fail=0`
+    - `11013: pass=3 fail=0`
+    - `11014: pass=3 fail=0`
+- 판정: Step 5 `완료`
+
+### Step 6 검증 로그
+
+- 실행: `python3 -m unittest -v tests/test_account_normalizer.py tests/test_llm_client.py tests/test_main_helpers.py`
+  - 결과: `Ran 24 tests ... OK`
+  - 캐시 정책 관련 확인:
+    - `test_cache_policy_read_only_does_not_write_cache ... ok`
+    - `test_cache_policy_bypass_ignores_existing_cache ... ok`
+    - `test_cache_policy_read_only_reads_existing_cache ... ok`
+    - `test_usage_tracks_cache_and_llm_metrics ... ok` (read_write hit/miss/write 계측)
+  - LLM 예산/가드레일 확인:
+    - `test_budget_limit_blocks_after_max_calls ... ok`
+    - `test_gateway_failure_returns_empty_json_and_counts_failure ... ok`
+  - Step8 summary 스키마 확인:
+    - `test_build_step8_summary_payload_schema ... ok`
+- 실행: Step 5와 동일한 온라인 고정 회귀 커맨드
+  - 결과: `pass=12 fail=0` (정규화 관련 치명적 회귀 없음)
+  - 스키마 필드 확인: 온라인 게이트에서 `metrics.warning_types`, `metrics.normalizer` 필드 검증 통과
+- 판정: Step 6 `완료`
 
 ## 3. 이번 사이클에서 완료한 핵심 항목
 
@@ -117,7 +188,7 @@
   - CI `workflow_dispatch` 입력: `run_online_strict_trackc=true`
   - 동작: 실공시 후보를 순차 실행해 최소 1건 `--step8-strict-trackc` 성공 요구
 - 단위 테스트 기준치 갱신
-  - 현재 기준 `45 tests` 통과
+  - 현재 기준 `50 tests` 통과
 
 ### G. Track C 입력 보강 (fnlttXbrl fallback)
 
@@ -157,7 +228,7 @@
   - `main.py`에서 `DocumentClassifier(company_name=args.company_name)` 사용
 - 검증
   - `tests/test_document_classifier.py` 프로파일 튜닝 테스트 2건 추가
-  - 전체 단위 테스트 `45 tests` 통과
+  - 전체 단위 테스트 `50 tests` 통과
 
 ### K. Step6 taxonomy alias 확장
 
@@ -170,7 +241,7 @@
   - alias 매핑 및 기본 fallback 동작 검증
 - 검증
   - `python3 main.py --check-config`
-  - `python3 -m unittest discover -s tests -v` (`45 tests` 통과)
+  - `python3 -m unittest discover -s tests -v` (`50 tests` 통과)
 
 ### L. Step6 숫자 노이즈/총계 행 처리 룰 강화
 
@@ -185,7 +256,7 @@
 - 검증
   - `tests/test_main_helpers.py`에 행 필터 테스트 3건 추가
   - `tests/manual_segment_revenue_regression.py` 회귀 `PASS` 유지
-  - 전체 단위 테스트 `45 tests` 통과
+  - 전체 단위 테스트 `50 tests` 통과
 
 ### M. Step8 운영 지표 자동 집계
 
@@ -254,7 +325,7 @@
   - 입력 연도: `2022,2023,2024`
   - 고정 기업: `삼성전자`, `SK하이닉스`, `LG전자`
 - 실행 스크립트:
-  - `python3 tests/online_step8_integration_gate.py --companies 삼성전자,SK하이닉스,LG전자 --years 2022,2023,2024 --report-codes 11012,11013,11014 --max-retries 2 --min-success-per-report-code 1`
+  - `python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix multi_report_year_matrix`
 - 실측 결과:
   - `11012`: PASS 3 / FAIL 0
   - `11013`: PASS 3 / FAIL 0
@@ -277,57 +348,89 @@
   - `Build Step8 Warning Trend Report` 단계 추가
   - 조건: 온라인 Step8 회귀 입력 중 하나라도 실행된 경우
   - 입력: `--recent-runs 5`, `--fetch-from-github`, `--github-repo`, `--github-token`
+  - 품질게이트: `warning_count delta <= 3`, `runtime_avg_ms delta <= 5000` 초과 시 실패
 - 실측(로컬 샘플 기준):
   - `run_count=9`, `report_codes(11012/11013/11014)=각 3`, `year_sets(2022,2023,2024)=9`
   - 추이 리포트 파일 생성 확인
+  - 품질게이트 상태: `pass` 확인
 
-## 4. 앞으로 해야 할 것 (우선순위)
+### T. 온라인 회귀 매트릭스 설정 파일화
 
-### 1순위: Track C 운영 정책 후속 정리 (Step8)
+- 설정 파일 추가: `config/online_step8_matrix.yaml`
+  - 회사/연도/보고서코드/재시도/최소성공건수 프로파일(`base`, `multi_report`, `year_matrix`, `multi_report_year_matrix`) 정의
+  - 회사별 검증 규칙(`allowed_segment_modes`, `min_segment_rows_when_parsed`, `require_single_segment_notice`) 정의
+- `tests/online_step8_integration_gate.py` 확장
+  - `--matrix-config`, `--matrix`, `--list-matrices` 지원
+  - 기존 개별 옵션(`--companies`, `--years`, `--report-codes` 등)은 매트릭스 override로 유지
+- CI 연동
+  - `.github/workflows/ci.yml`의 Step8 온라인 회귀 단계가 공통 설정 파일을 읽도록 변경
+  - 하드코딩 인자 제거, `--matrix-config config/online_step8_matrix.yaml --matrix <profile>` 형태로 통일
+- 운영/규칙 문서 반영
+  - `docs/CI_RULES.md`, `docs/OPERATIONS.md`, `README.md`
 
-- 완료됨: `*_pre.xml` 없음 기본 `info` 처리
-- 완료됨: `--step8-strict-trackc` 옵션 도입
-- 완료됨: `trackc_mode` 상태코드 로그 출력
-- 완료됨: 기본 정책을 README/운영가이드/CI 규칙에 반영
-- 완료됨: CI strict 게이트용 고정 XBRL 샘플(`tests/fixtures/trackc_strict_sample`) 확정
-- 완료됨: 실공시 기반 온라인 strict 선택 게이트 추가(`run_online_strict_trackc`)
-- 완료됨: 온라인 strict 게이트 실측 PASS 2건 확보(삼성전자/2024, SK하이닉스/2024)
-- 완료됨: 온라인 게이트 통과 실공시 조합(회사/연도) 2건 고정 + CI 반영
+### U. 추이 품질게이트 임계치 운영 튜닝
 
-### 2순위: Step5 파싱 품질 고도화
+- 설정 파일 추가: `config/step8_warning_quality_gate.yaml`
+  - 전역 임계치: `max_warning_delta`, `max_runtime_avg_ms_delta`
+  - 보고서코드별 임계치: `report_code_thresholds`
+    - 연간(`11011`)은 엄격, 분기/반기(`11012/11013/11014`)는 완화
+  - 경고유형 임계치/무시 목록: `max_warning_type_delta`, `ignore_warning_types`
+- `tests/collect_step8_warning_trends.py` 확장
+  - `--quality-gate-config` 지원 (기본: `config/step8_warning_quality_gate.yaml`)
+  - 보고서코드별 경고건수/평균 실행시간 델타 계산 및 게이트 평가
+  - 경고유형별 delta 임계치/ignore 규칙 평가
+  - 추이 리포트에 게이트 설정 로드 여부, 보고서코드별/경고유형별 delta 섹션 추가
+- 테스트 보강
+  - `tests/test_collect_step8_warning_trends.py`에 보고서코드별 임계치/경고유형 ignore 검증 케이스 추가
+- CI/문서 반영
+  - `.github/workflows/ci.yml`에서 추이 게이트 실행 시 설정 파일 참조
+  - `docs/CI_RULES.md`, `docs/OPERATIONS.md`, `README.md` 실행 예시 업데이트
+- 실측 기반 1차 재보정(2026-02-25)
+  - 비교군:
+    - baseline: `year_matrix_3y` + `multi_report_year_matrix_local` (12 runs)
+    - current: `recalib_year_matrix` + `recalib_multi_report_year_matrix` (12 runs)
+  - 관측 delta:
+    - `warning_count`: `0`
+    - `runtime_avg_ms`: `-2517.59`
+    - 보고서코드별 runtime delta:
+      - `11011`: `-642.66`
+      - `11012`: `-4352.33`
+      - `11013`: `-3151.66`
+      - `11014`: `-1923.67`
+  - 조정:
+    - `11012/11013/11014 max_warning_delta`: `4 -> 3`
+    - `11012/11013/11014 max_runtime_avg_ms_delta`: `6500 -> 5500`
+  - 검증:
+    - `tests/collect_step8_warning_trends.py --quality-gate-config config/step8_warning_quality_gate.yaml --fail-on-quality-gate` 통과
 
-- 완료됨: `segment_revenue` 추출 보강(삼성전자/현대차 회귀에서 유효 row 확인)
-- 완료됨: 타사 샘플 3개(`삼성전자`, `SK하이닉스`, `현대자동차`) 회귀검증
-- 병합셀/다중헤더/주석형 텍스트 테이블 제외 규칙 보강
-- 완료됨: 문서분류 점수 기준 샘플사 튜닝(대형 제조/금융)
+## 4. 앞으로 해야 할 것 (우선순위, 2026-02-25 기준)
 
-### 3순위: Step6 정규화 보강
+### 완료: Step 5/6 완료 판정 실행 및 상태 갱신
 
-- 완료됨: `sga_detail`, `segment_revenue` taxonomy alias 확장
-- 완료됨: 숫자 노이즈 행/총계 행 처리 룰 강화
-- 완료됨: `llm_client` 선택적 연동 옵션 설계/구현(비용/캐시 정책 포함)
+- `2-1. Step 5/6 완료 판정 기준(DoD)` 검증 커맨드 실제 실행 완료
+- Step 5/6 검증 로그 문서 첨부 완료 (`2-2` 섹션)
+- 상태 갱신 완료: `Step 5=완료`, `Step 6=완료`
 
-### 4순위: Step9 테스트/검증 체계 구축
+### 완료: 온라인 회귀 정기 배치(scheduled) 추가
 
-- 완료됨: 단위 테스트 1차 세트(`dart_api`, `document_classifier`, `main` 헬퍼/Step8 요약 스키마)
-- 완료됨: `html_parser` 규칙/엣지케이스 테스트 5건 추가
-  - 파일: `tests/test_html_parser.py`
-  - 범위: 병합셀/다중헤더 파싱, 멀티헤더 연도 추정, 주석형 텍스트 테이블 제외, 단일사업부문 안내 감지
-- 완료됨: 단위 테스트 기준치 갱신(`45 tests` 통과)
-- 완료됨: 온라인 Step8 통합 회귀 게이트 추가
-  - 스크립트: `tests/online_step8_integration_gate.py`
-  - CI `workflow_dispatch` 입력: `run_online_step8_regression=true`
-  - 검증 항목: `track_a(bs/cf)`, `track_c(mode=parsed)`, `track_b_fallback(mode/segment_rows)` 요약 JSON 검사
-- 완료됨: 온라인 Step8 통합 회귀 고정 조합 3개 확정
-  - 조합: `삼성전자(2024)`, `SK하이닉스(2024)`, `LG전자(2024)`
-  - 실측 결과: `PASS 3 / FAIL 0` 확인
-  - 비고: `현대자동차(2024)`는 strict Track C에서 `no_xbrl_dir`로 제외
-- 통합 테스트
-  - 실제 공시 샘플 2~3개로 E2E 회귀검증
-- 운영 지표
-  - 실행시간, 캐시 히트율, warning 발생 유형 집계
+- `.github/workflows/ci.yml`에 `schedule`(cron) 트리거 추가
+- 수동(`workflow_dispatch`)과 정기 배치가 동일한 게이트/아티팩트 경로(`/tmp/step8_online_artifacts/*`)를 사용하도록 정리
+- 정기 실행 실패 시 확인 가능한 알림/로그 확인 절차 문서화
+  - `docs/OPERATIONS.md` 6) 정기 배치 실패 대응
+  - `docs/CI_RULES.md` 온라인 CI 조건/기본 실행 범위 반영
+
+### 완료: 온라인 회귀 매트릭스 설정 파일화
+
+- 회사/연도/보고서코드/검증 규칙을 `config/online_step8_matrix.yaml`로 분리
+- `tests/online_step8_integration_gate.py`와 CI가 동일 설정을 읽도록 통합
+- 신규 기업/산업군 추가 시 설정 파일 확장으로 대응 가능하도록 구조화
+
+### 완료: 추이 품질게이트 임계치 운영 튜닝
+
+- 최근 N회 데이터 추이 비교용 게이트를 설정 파일 기반으로 전환
+- 보고서코드(`11011/11012/11013/11014`)별 임계치 세분화 반영
+- 경고유형별 임계치/ignore 정책 반영으로 오탐 민감도 조정
 
 ## 5. 다음 권장 TODO
 
-1. 완료됨: 분기/반기(`11012/11013/11014`)도 `2022,2023,2024` 연도 매트릭스로 확장해 장기 회귀 일관성 확인
-2. 완료됨: `step8-warning-metrics` 아티팩트의 추이 비교(최근 N회) 리포트 자동화
+1. 최근 운영 데이터 누적 후 `config/step8_warning_quality_gate.yaml` 임계치 재보정

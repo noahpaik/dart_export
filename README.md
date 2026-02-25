@@ -125,39 +125,29 @@ Track C 온라인 strict 게이트(선택):
 python3 tests/online_trackc_strict_gate.py --candidates 삼성전자,SK하이닉스 --years 2024 --min-success 2 --max-attempts 2
 ```
 
+Step8 온라인 회귀 매트릭스 확인:
+```bash
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --list-matrices
+```
+
 Step8 온라인 통합 회귀 게이트(선택):
 ```bash
-python3 tests/online_step8_integration_gate.py --companies 삼성전자,SK하이닉스,LG전자 --years 2024 --max-retries 3
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix base
 ```
 
 Step8 온라인 분기/반기 회귀 게이트(선택):
 ```bash
-python3 tests/online_step8_integration_gate.py \
-  --companies 삼성전자,SK하이닉스,LG전자 \
-  --years 2024 \
-  --report-codes 11012,11013,11014 \
-  --max-retries 2 \
-  --min-success-per-report-code 1
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix multi_report
 ```
 
 Step8 온라인 연도 매트릭스 회귀 게이트(선택):
 ```bash
-python3 tests/online_step8_integration_gate.py \
-  --companies 삼성전자,SK하이닉스,LG전자 \
-  --years 2022,2023,2024 \
-  --report-codes 11011 \
-  --max-retries 2 \
-  --min-success-per-report-code 1
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix year_matrix
 ```
 
 Step8 온라인 분기/반기 연도 매트릭스 회귀 게이트(선택):
 ```bash
-python3 tests/online_step8_integration_gate.py \
-  --companies 삼성전자,SK하이닉스,LG전자 \
-  --years 2022,2023,2024 \
-  --report-codes 11012,11013,11014 \
-  --max-retries 2 \
-  --min-success-per-report-code 1
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix multi_report_year_matrix
 ```
 
 Step8 경고 메트릭 집계(로컬):
@@ -176,6 +166,18 @@ python3 tests/collect_step8_warning_trends.py \
   --output-json /tmp/step8_online_artifacts/metrics/step8_warning_trends.json \
   --output-md /tmp/step8_online_artifacts/metrics/step8_warning_trends.md \
   --recent-runs 5
+```
+
+Step8 추이 품질게이트(로컬):
+```bash
+python3 tests/collect_step8_warning_trends.py \
+  --current-metrics-json /tmp/step8_online_artifacts/metrics/step8_warning_metrics.json \
+  --history-dir /tmp/step8_online_artifacts/history \
+  --output-json /tmp/step8_online_artifacts/metrics/step8_warning_trends.json \
+  --output-md /tmp/step8_online_artifacts/metrics/step8_warning_trends.md \
+  --recent-runs 5 \
+  --quality-gate-config config/step8_warning_quality_gate.yaml \
+  --fail-on-quality-gate
 ```
 
 온라인 CI에서 Step8 회귀를 실행하면 아티팩트 `step8-warning-metrics`가 업로드되며,

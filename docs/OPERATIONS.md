@@ -115,34 +115,19 @@ Step6 캐시 정책:
 3. 릴리즈 점검: 표준 Step8 + 엄격 Step8(고정 샘플 또는 온라인 strict 게이트) 결과 보관
 4. 온라인 통합 회귀(선택): 고정 조합으로 Step8 요약 검증
 ```bash
-python3 tests/online_step8_integration_gate.py --companies 삼성전자,SK하이닉스,LG전자 --years 2024 --max-retries 3
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix base
 ```
 5. 온라인 분기/반기 회귀(선택): `11012/11013/11014`에서 최소 성공 건수 확인
 ```bash
-python3 tests/online_step8_integration_gate.py \
-  --companies 삼성전자,SK하이닉스,LG전자 \
-  --years 2024 \
-  --report-codes 11012,11013,11014 \
-  --max-retries 2 \
-  --min-success-per-report-code 1
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix multi_report
 ```
 6. 온라인 연도 매트릭스 회귀(선택): `2022,2023,2024` 다개년 입력 검증
 ```bash
-python3 tests/online_step8_integration_gate.py \
-  --companies 삼성전자,SK하이닉스,LG전자 \
-  --years 2022,2023,2024 \
-  --report-codes 11011 \
-  --max-retries 2 \
-  --min-success-per-report-code 1
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix year_matrix
 ```
 7. 온라인 분기/반기 연도 매트릭스 회귀(선택): `11012/11013/11014` + `2022,2023,2024` 장기 입력 검증
 ```bash
-python3 tests/online_step8_integration_gate.py \
-  --companies 삼성전자,SK하이닉스,LG전자 \
-  --years 2022,2023,2024 \
-  --report-codes 11012,11013,11014 \
-  --max-retries 2 \
-  --min-success-per-report-code 1
+python3 tests/online_step8_integration_gate.py --matrix-config config/online_step8_matrix.yaml --matrix multi_report_year_matrix
 ```
 8. Step8 경고 메트릭 집계(선택): 온라인 회귀 산출물 기준 집계 리포트 생성
 ```bash
@@ -160,5 +145,41 @@ python3 tests/collect_step8_warning_trends.py \
   --output-md /tmp/step8_online_artifacts/metrics/step8_warning_trends.md \
   --recent-runs 5
 ```
-10. CI 아티팩트 확인: 온라인 Step8 회귀가 실행된 경우 `step8-warning-metrics` 아티팩트에서
+10. Step8 추이 품질게이트(선택): 경고/성능 delta 임계치 초과 시 실패 처리
+```bash
+python3 tests/collect_step8_warning_trends.py \
+  --current-metrics-json /tmp/step8_online_artifacts/metrics/step8_warning_metrics.json \
+  --history-dir /tmp/step8_online_artifacts/history \
+  --output-json /tmp/step8_online_artifacts/metrics/step8_warning_trends.json \
+  --output-md /tmp/step8_online_artifacts/metrics/step8_warning_trends.md \
+  --recent-runs 5 \
+  --quality-gate-config config/step8_warning_quality_gate.yaml \
+  --fail-on-quality-gate
+```
+11. CI 아티팩트 확인: 온라인 Step8 회귀가 실행된 경우 `step8-warning-metrics` 아티팩트에서
    메트릭 리포트(`metrics/step8_warning_metrics.{json,md}`)와 추이 리포트(`metrics/step8_warning_trends.{json,md}`)를 함께 점검
+12. 임계치 튜닝: `config/step8_warning_quality_gate.yaml`에서 전역/보고서코드별/경고유형별 임계치를 조정
+
+## 6) 정기 배치(schedule) 실패 대응
+
+정기 배치 기준:
+- GitHub Actions `CI` 워크플로의 `schedule` 이벤트(UTC cron) 실행
+- 온라인 게이트/아티팩트 경로는 수동(`workflow_dispatch`)과 동일
+
+실패 확인 절차:
+1. GitHub Repository > Actions > `CI`에서 이벤트가 `schedule`인 최신 실패 run 확인
+2. 실패 job이 `online-checks`인지 먼저 확인하고 실패 step 이름을 기록
+3. `step8-warning-metrics` 아티팩트 다운로드 후 아래 파일 우선 확인
+   - `metrics/step8_warning_metrics.md`
+   - `metrics/step8_warning_trends.md`
+4. 실패 유형 분류
+   - 네트워크/DART API 실패: `Network Check`, `DART Latest Report Probe` 로그 확인
+   - 품질게이트 실패: `Build Step8 Warning Trend Report`의 delta/warning 로그 확인
+   - 회귀 실패: 해당 `Step8 ... Regression` step의 회사/보고서코드별 fail 로그 확인
+5. 1차 복구
+   - 일시적 네트워크 장애: 동일 commit으로 `workflow_dispatch` 재실행
+   - 지속적 회귀/품질게이트 실패: 실패 조합을 로컬 재현 후 룰/임계치 조정 이슈 생성
+6. 조치 결과를 run 링크와 함께 작업 기록(이슈/PR)에 남김
+
+알림 권장:
+- 저장소 `Watch` 설정에서 Actions 실패 알림을 활성화해 정기 배치 실패를 즉시 확인

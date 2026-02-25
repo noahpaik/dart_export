@@ -1,0 +1,99 @@
+schema_version: 1
+default_matrix: base
+
+company_rules:
+  삼성전자:
+    allowed_segment_modes:
+      - parsed
+    min_segment_rows_when_parsed: 1
+    require_single_segment_notice: false
+  SK하이닉스:
+    allowed_segment_modes:
+      - parsed
+      - skipped(single_segment_notice)
+    min_segment_rows_when_parsed: 1
+    require_single_segment_notice: true
+  LG전자:
+    allowed_segment_modes:
+      - parsed
+    min_segment_rows_when_parsed: 1
+    require_single_segment_notice: false
+
+profiles:
+  base:
+    companies:
+      - 삼성전자
+      - SK하이닉스
+      - LG전자
+    years:
+      - 2024
+    report_codes:
+      - "11011"
+    max_retries: 3
+    retry_delay_seconds: 2.0
+    min_success_per_report_code: 0
+
+  multi_report:
+    companies:
+      - 삼성전자
+      - SK하이닉스
+      - LG전자
+    years:
+      - 2024
+    report_codes:
+      - "11012"
+      - "11013"
+      - "11014"
+    max_retries: 3
+    retry_delay_seconds: 2.0
+    min_success_per_report_code: 1
+
+  year_matrix:
+    companies:
+      - 삼성전자
+      - SK하이닉스
+      - LG전자
+    years:
+      - 2022
+      - 2023
+      - 2024
+    report_codes:
+      - "11011"
+    max_retries: 3
+    retry_delay_seconds: 2.0
+    min_success_per_report_code: 1
+
+  multi_report_year_matrix:
+    companies:
+      - 삼성전자
+      - SK하이닉스
+      - LG전자
+    years:
+      - 2022
+      - 2023
+      - 2024
+    report_codes:
+      - "11012"
+      - "11013"
+      - "11014"
+    max_retries: 3
+    retry_delay_seconds: 2.0
+    min_success_per_report_code: 1
+
+  all_reports_year_matrix:
+    companies:
+      - 삼성전자
+      - SK하이닉스
+      - LG전자
+    years:
+      - 2022
+      - 2023
+      - 2024
+    report_codes:
+      - "11011"
+      - "11012"
+      - "11013"
+      - "11014"
+    max_retries: 2
+    retry_delay_seconds: 2.0
+    min_success_per_report_code: 1
