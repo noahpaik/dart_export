@@ -76,6 +76,84 @@ class CollectStep8WarningTrendsTests(unittest.TestCase):
         self.assertEqual(report["deltas"]["warning_count_by_report_code"]["11012"], -1)
         self.assertEqual(report["deltas"]["runtime_avg_ms_by_report_code"]["11012"], -300.0)
 
+    def test_build_trend_report_prefers_profile_matched_previous(self) -> None:
+        current_payload = {
+            "generated_at": "2026-02-25T12:00:00+00:00",
+            "totals": {
+                "run_count": 3,
+                "warning_count": 1,
+                "runtime": {"avg_ms": 7000, "max_ms": 9000},
+                "warning_types": {"empty_timeseries": 1},
+                "track_c_modes": {"parsed": 3},
+                "track_b_modes": {"parsed": 2, "skipped(single_segment_notice)": 1},
+                "report_codes": {"11011": 3},
+                "year_sets": {"2022,2023,2024": 3},
+            },
+            "runs": [
+                {"report_code": "11011", "warning_count": 1, "runtime_ms": 7000},
+            ],
+        }
+        previous_mismatch_payload = {
+            "generated_at": "2026-02-24T12:00:00+00:00",
+            "totals": {
+                "run_count": 9,
+                "warning_count": 2,
+                "runtime": {"avg_ms": 6000, "max_ms": 10000},
+                "warning_types": {"empty_timeseries": 2},
+                "track_c_modes": {"parsed": 9},
+                "track_b_modes": {"parsed": 6, "skipped(single_segment_notice)": 3},
+                "report_codes": {"11012": 3, "11013": 3, "11014": 3},
+                "year_sets": {"2022,2023,2024": 9},
+            },
+            "runs": [
+                {"report_code": "11012", "warning_count": 1, "runtime_ms": 6000},
+                {"report_code": "11013", "warning_count": 1, "runtime_ms": 6000},
+                {"report_code": "11014", "warning_count": 0, "runtime_ms": 6000},
+            ],
+        }
+        previous_match_payload = {
+            "generated_at": "2026-02-23T12:00:00+00:00",
+            "totals": {
+                "run_count": 3,
+                "warning_count": 3,
+                "runtime": {"avg_ms": 9000, "max_ms": 12000},
+                "warning_types": {"empty_timeseries": 3},
+                "track_c_modes": {"parsed": 3},
+                "track_b_modes": {"parsed": 2, "skipped(single_segment_notice)": 1},
+                "report_codes": {"11011": 3},
+                "year_sets": {"2022,2023,2024": 3},
+            },
+            "runs": [
+                {"report_code": "11011", "warning_count": 3, "runtime_ms": 9000},
+            ],
+        }
+        report = MODULE.build_trend_report(
+            current_payload=current_payload,
+            current_source="/tmp/current.json",
+            history_entries=[
+                {
+                    "payload": previous_mismatch_payload,
+                    "source": "/tmp/prev_mismatch.json",
+                    "run_id": 11,
+                    "artifact_id": 111,
+                    "fallback_generated_at": None,
+                },
+                {
+                    "payload": previous_match_payload,
+                    "source": "/tmp/prev_match.json",
+                    "run_id": 12,
+                    "artifact_id": 112,
+                    "fallback_generated_at": None,
+                },
+            ],
+            recent_runs=5,
+            fetch_summary={"enabled": False, "errors": [], "fetched_runs": 0, "considered_artifacts": 0},
+            parse_failures=[],
+        )
+        self.assertEqual(report["previous_selection_mode"], "profile_match")
+        self.assertEqual(report["previous"]["source"], "/tmp/prev_match.json")
+        self.assertEqual(report["deltas"]["warning_count"], -2)
+
     def test_evaluate_quality_gate_fail_when_delta_exceeds_threshold(self) -> None:
         report = {
             "previous": {"warning_count": 1},
@@ -259,18 +337,22 @@ class CollectStep8WarningTrendsTests(unittest.TestCase):
                     "max_warning_delta": 3,
                     "max_runtime_avg_ms_delta": 5000,
                     "require_previous": False,
+                    "min_run_count": None,
+                    "min_run_count_by_report_code": None,
                     "max_warning_delta_by_report_code": {},
                     "max_runtime_avg_ms_delta_by_report_code": {},
                     "max_warning_type_delta": {},
                     "ignore_warning_types": [],
                 },
                 "violations": [],
+                "skip_reasons": [],
             },
             "quality_gate_config": {
                 "path": "config/step8_warning_quality_gate.yaml",
                 "loaded": True,
             },
             "parse_failures": [],
+            "previous_selection_mode": "none",
         }
         text = MODULE.render_markdown(report)
         self.assertIn("# Step8 Warning Metrics Trend Report", text)

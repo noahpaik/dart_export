@@ -149,6 +149,15 @@ def _sum_count_maps(items: list[dict[str, int]]) -> dict[str, int]:
     return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
+def _point_profile_signature(point: dict[str, Any]) -> tuple[tuple[tuple[str, int], ...], tuple[tuple[str, int], ...]]:
+    report_codes = _normalize_count_map(point.get("report_codes", {}))
+    year_sets = _normalize_count_map(point.get("year_sets", {}))
+    return (
+        tuple(sorted(report_codes.items())),
+        tuple(sorted(year_sets.items())),
+    )
+
+
 def _collect_run_level_metrics(payload: dict[str, Any]) -> tuple[dict[str, int], dict[str, float]]:
     runs = payload.get("runs", []) if isinstance(payload, dict) else []
     if not isinstance(runs, list):
@@ -428,7 +437,18 @@ def build_trend_report(
     limit = max(1, int(recent_runs))
     recent_points = points[:limit]
     latest = recent_points[0] if recent_points else None
-    previous = recent_points[1] if len(recent_points) > 1 else None
+    previous = None
+    previous_selection_mode = "none"
+    if latest is not None:
+        latest_signature = _point_profile_signature(latest)
+        for candidate in recent_points[1:]:
+            if _point_profile_signature(candidate) == latest_signature:
+                previous = candidate
+                previous_selection_mode = "profile_match"
+                break
+        if previous is None and len(recent_points) > 1:
+            previous = recent_points[1]
+            previous_selection_mode = "fallback_recent"
 
     latest_warning = _to_int((latest or {}).get("warning_count"), 0)
     prev_warning = _to_int((previous or {}).get("warning_count"), 0)
@@ -457,6 +477,7 @@ def build_trend_report(
         "point_count_used": len(recent_points),
         "latest": latest,
         "previous": previous,
+        "previous_selection_mode": previous_selection_mode,
         "deltas": {
             "warning_count": latest_warning - prev_warning if previous else None,
             "run_count": latest_run_count - prev_run_count if previous else None,
@@ -909,6 +930,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.append(f"- recent_runs_limit: `{report.get('recent_runs_limit')}`")
     lines.append(f"- points_used: `{report.get('point_count_used')}` / `{report.get('point_count_total')}`")
     lines.append(f"- latest_source: `{latest.get('source')}`")
+    lines.append(f"- previous_selection_mode: `{report.get('previous_selection_mode')}`")
     lines.append(
         f"- quality_gate_config: path=`{quality_gate_config.get('path')}` loaded=`{quality_gate_config.get('loaded')}`"
     )
